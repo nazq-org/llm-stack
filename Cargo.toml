@@ -1,0 +1,24 @@
+[workspace]
+resolver = "2"
+members = ["crates/llm-stack-core", "crates/llm-stack-anthropic", "crates/llm-stack-openai", "crates/llm-stack-ollama"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85.0"
+license = "Apache-2.0"
+repository = "https://github.com/nazq/llm-stack"
+homepage = "https://github.com/nazq/llm-stack"
+documentation = "https://docs.rs/llm-stack-core"
+readme = "README.md"
+keywords = ["llm", "ai", "anthropic", "openai", "ollama"]
+categories = ["api-bindings", "asynchronous"]
+authors = ["llm-stack contributors"]
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"

@@ -1,0 +1,38 @@
+# release-plz configuration
+# https://release-plz.dev/docs/config
+
+[workspace]
+# Use conventional commits for changelog generation
+changelog_config = "cliff.toml"
+
+# Create a single PR for all workspace crates
+pr_draft = false
+pr_labels = ["release"]
+
+# Publish packages in dependency order
+publish_timeout = "10m"
+
+# Run cargo-semver-checks before releasing
+semver_check = true
+
+# Git tag format: <package>-v<version>
+git_tag_name = "{{ package }}-v{{ version }}"
+git_release_name = "{{ package }} v{{ version }}"
+git_release_draft = false
+
+# Changelog settings
+[[package]]
+name = "llm-stack-core"
+changelog_include = ["llm-stack-core"]
+
+[[package]]
+name = "llm-stack-anthropic"
+changelog_include = ["llm-stack-anthropic"]
+
+[[package]]
+name = "llm-stack-openai"
+changelog_include = ["llm-stack-openai"]
+
+[[package]]
+name = "llm-stack-ollama"
+changelog_include = ["llm-stack-ollama"]
