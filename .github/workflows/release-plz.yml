@@ -52,6 +52,9 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Create tmp directory
+        run: mkdir -p tmp
+
       - name: Run release-plz
         uses: release-plz/action@v0.5
         with:
