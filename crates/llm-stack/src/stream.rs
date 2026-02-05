@@ -9,7 +9,7 @@
 //!
 //! ```rust,no_run
 //! use futures::StreamExt;
-//! use llm_stack_core::{ChatStream, StreamEvent};
+//! use llm_stack::{ChatStream, StreamEvent};
 //!
 //! async fn print_stream(mut stream: ChatStream) {
 //!     while let Some(event) = stream.next().await {

@@ -5,8 +5,8 @@ The interceptor system provides composable middleware for LLM calls and tool exe
 ## Overview
 
 ```rust
-use llm_stack_core::ToolRegistry;
-use llm_stack_core::intercept::{InterceptorStack, Retry, Timeout, ToolExec};
+use llm_stack::ToolRegistry;
+use llm_stack::intercept::{InterceptorStack, Retry, Timeout, ToolExec};
 use std::time::Duration;
 
 // Tool execution with interceptors (integrated with ToolRegistry)
@@ -81,7 +81,7 @@ let stack = InterceptorStack::<ToolExec<()>>::new()
 Exponential backoff retry for transient failures:
 
 ```rust
-use llm_stack_core::intercept::Retry;
+use llm_stack::intercept::Retry;
 
 // Defaults: 3 attempts, 500ms initial delay, 2x multiplier
 let retry = Retry::default();
@@ -102,7 +102,7 @@ Works with any `Interceptable` where `Output: Retryable`.
 Wraps operations with a deadline:
 
 ```rust
-use llm_stack_core::intercept::Timeout;
+use llm_stack::intercept::Timeout;
 
 let timeout = Timeout::new(Duration::from_secs(30));
 ```
@@ -114,7 +114,7 @@ Works with any `Interceptable` where `Output: Timeoutable`.
 Logs operation start/completion via `tracing`:
 
 ```rust
-use llm_stack_core::intercept::{Logging, LogLevel};
+use llm_stack::intercept::{Logging, LogLevel};
 
 let logging = Logging::new(LogLevel::Debug);
 ```
@@ -129,7 +129,7 @@ Log levels:
 Gate tool calls with custom logic:
 
 ```rust
-use llm_stack_core::intercept::{Approval, ApprovalDecision};
+use llm_stack::intercept::{Approval, ApprovalDecision};
 
 let approval = Approval::new(|req| {
     if req.name == "delete_file" {
@@ -204,8 +204,8 @@ for partial results, and a failed response might not be retryable for auth error
 ## Integration with ToolRegistry
 
 ```rust
-use llm_stack_core::{ToolRegistry, tool_fn};
-use llm_stack_core::intercept::{InterceptorStack, ToolExec, Approval, ApprovalDecision, Retry};
+use llm_stack::{ToolRegistry, tool_fn};
+use llm_stack::intercept::{InterceptorStack, ToolExec, Approval, ApprovalDecision, Retry};
 
 let registry: ToolRegistry<MyContext> = ToolRegistry::new()
     .with_interceptors(
@@ -225,7 +225,7 @@ registry.register(my_tool);
 ### Basic Pattern
 
 ```rust
-use llm_stack_core::intercept::{Interceptable, Interceptor, Next};
+use llm_stack::intercept::{Interceptable, Interceptor, Next};
 use std::future::Future;
 use std::pin::Pin;
 
@@ -254,7 +254,7 @@ where
 ### Domain-Specific Interceptor
 
 ```rust
-use llm_stack_core::intercept::{Interceptor, Next, ToolExec, ToolRequest, ToolResponse};
+use llm_stack::intercept::{Interceptor, Next, ToolExec, ToolRequest, ToolResponse};
 
 struct RateLimiter {
     permits: Arc<Semaphore>,
@@ -350,7 +350,7 @@ let llm_stack = InterceptorStack::<LlmCall>::new()
 ## Module Structure
 
 ```
-llm_stack_core::intercept
+llm_stack::intercept
 ├── Interceptable          // Core trait for interceptable operations
 ├── Interceptor            // Core trait for interceptors
 ├── InterceptorStack       // Builder for chaining interceptors

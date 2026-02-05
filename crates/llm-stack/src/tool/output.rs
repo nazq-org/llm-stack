@@ -9,7 +9,7 @@
 /// # Example
 ///
 /// ```rust
-/// use llm_stack_core::tool::ToolOutput;
+/// use llm_stack::tool::ToolOutput;
 ///
 /// let output = ToolOutput::new("Result: 42");
 /// ```

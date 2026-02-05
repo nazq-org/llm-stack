@@ -92,7 +92,7 @@ impl AddAssign<&Usage> for Usage {
 /// # Examples
 ///
 /// ```rust
-/// use llm_stack_core::Cost;
+/// use llm_stack::Cost;
 ///
 /// let cost = Cost::new(300_000, 150_000).expect("no overflow");
 /// assert_eq!(cost.total_microdollars(), 450_000);
@@ -229,7 +229,7 @@ impl AddAssign for Cost {
 /// # Example
 ///
 /// ```rust
-/// use llm_stack_core::usage::{Usage, UsageTracker};
+/// use llm_stack::usage::{Usage, UsageTracker};
 ///
 /// let mut tracker = UsageTracker::with_context_limit(128_000);
 ///
@@ -350,7 +350,7 @@ impl UsageTracker {
     /// # Example
     ///
     /// ```rust
-    /// use llm_stack_core::usage::{Usage, UsageTracker};
+    /// use llm_stack::usage::{Usage, UsageTracker};
     ///
     /// let mut tracker = UsageTracker::with_context_limit(100_000);
     /// tracker.record(Usage {
@@ -390,7 +390,7 @@ impl UsageTracker {
 /// # Example
 ///
 /// ```rust
-/// use llm_stack_core::usage::{ModelPricing, Usage};
+/// use llm_stack::usage::{ModelPricing, Usage};
 ///
 /// // Claude 3.5 Sonnet pricing (as of early 2024)
 /// let pricing = ModelPricing {

@@ -5,8 +5,8 @@ Long conversations eventually exceed the model's context window. The `ContextWin
 ## Quick example
 
 ```rust
-use llm_stack_core::context::ContextWindow;
-use llm_stack_core::ChatMessage;
+use llm_stack::context::ContextWindow;
+use llm_stack::ChatMessage;
 
 // 128K context, reserve 4K for output
 let mut window = ContextWindow::new(128_000, 4_000);
@@ -56,7 +56,7 @@ let tokens = response.usage.input_tokens as u32;
 window.push(message, tokens);
 
 // Or estimate before a call
-use llm_stack_core::context::estimate_message_tokens;
+use llm_stack::context::estimate_message_tokens;
 let estimated = estimate_message_tokens(&message);
 window.push(message, estimated);
 ```
@@ -177,7 +177,7 @@ window.update_token_count(index, actual_tokens);
 When you don't have exact counts, use the built-in heuristics:
 
 ```rust
-use llm_stack_core::context::{estimate_tokens, estimate_message_tokens};
+use llm_stack::context::{estimate_tokens, estimate_message_tokens};
 
 // Estimate text tokens (~4 chars per token for English)
 let tokens = estimate_tokens("Hello, how are you?");  // ~5 tokens

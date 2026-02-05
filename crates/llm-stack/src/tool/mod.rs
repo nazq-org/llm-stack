@@ -19,11 +19,11 @@
 //! # Example
 //!
 //! ```rust,no_run
-//! use llm_stack_core::tool::{ToolRegistry, tool_fn, ToolLoopConfig, tool_loop};
-//! use llm_stack_core::{ChatParams, ChatMessage, JsonSchema, ToolDefinition};
+//! use llm_stack::tool::{ToolRegistry, tool_fn, ToolLoopConfig, tool_loop};
+//! use llm_stack::{ChatParams, ChatMessage, JsonSchema, ToolDefinition};
 //! use serde_json::{json, Value};
 //!
-//! # async fn example(provider: &dyn llm_stack_core::DynProvider) -> Result<(), llm_stack_core::LlmError> {
+//! # async fn example(provider: &dyn llm_stack::DynProvider) -> Result<(), llm_stack::LlmError> {
 //! let mut registry: ToolRegistry<()> = ToolRegistry::new();
 //! registry.register(tool_fn(
 //!     ToolDefinition {
@@ -64,8 +64,8 @@
 //! or configuration. Use [`tool_fn_with_ctx`] to create tools that receive context:
 //!
 //! ```rust,no_run
-//! use llm_stack_core::tool::{tool_fn_with_ctx, ToolRegistry, ToolError, ToolOutput, tool_loop, ToolLoopConfig, LoopDepth};
-//! use llm_stack_core::{ToolDefinition, JsonSchema, ChatParams, ChatMessage};
+//! use llm_stack::tool::{tool_fn_with_ctx, ToolRegistry, ToolError, ToolOutput, tool_loop, ToolLoopConfig, LoopDepth};
+//! use llm_stack::{ToolDefinition, JsonSchema, ChatParams, ChatMessage};
 //! use serde_json::{json, Value};
 //!
 //! // Your application context - must implement Clone for LoopDepth
@@ -84,7 +84,7 @@
 //!     }
 //! }
 //!
-//! # async fn example(provider: &dyn llm_stack_core::DynProvider) -> Result<(), llm_stack_core::LlmError> {
+//! # async fn example(provider: &dyn llm_stack::DynProvider) -> Result<(), llm_stack::LlmError> {
 //! // Create a tool that uses context
 //! let handler = tool_fn_with_ctx(
 //!     ToolDefinition {

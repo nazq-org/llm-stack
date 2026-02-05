@@ -7,7 +7,7 @@
 //! # Example
 //!
 //! ```rust
-//! use llm_stack_core::tool::LoopDepth;
+//! use llm_stack::tool::LoopDepth;
 //!
 //! #[derive(Clone)]
 //! struct AgentContext {
@@ -41,7 +41,7 @@
 /// Use this for simple cases where depth tracking isn't needed:
 ///
 /// ```rust
-/// use llm_stack_core::tool::LoopDepth;
+/// use llm_stack::tool::LoopDepth;
 ///
 /// // () always returns 0, ignores depth changes
 /// assert_eq!(().loop_depth(), 0);
@@ -53,7 +53,7 @@
 /// For agent systems with nesting, implement this on your context type:
 ///
 /// ```rust
-/// use llm_stack_core::tool::LoopDepth;
+/// use llm_stack::tool::LoopDepth;
 ///
 /// #[derive(Clone)]
 /// struct MyContext {
@@ -93,7 +93,7 @@ pub trait LoopDepth: Clone + Send + Sync {
 /// This allows simple use cases to work without implementing the trait:
 ///
 /// ```rust
-/// use llm_stack_core::tool::{ToolLoopConfig, ToolRegistry};
+/// use llm_stack::tool::{ToolLoopConfig, ToolRegistry};
 ///
 /// // Works with () context, no depth tracking
 /// let registry: ToolRegistry<()> = ToolRegistry::new();

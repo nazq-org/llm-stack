@@ -55,7 +55,7 @@ let provider = OllamaProvider::new(OllamaConfig {
 All providers implement `Provider`, so the usage is identical:
 
 ```rust
-use llm_stack_core::{ChatMessage, ChatParams, Provider};
+use llm_stack::{ChatMessage, ChatParams, Provider};
 
 let params = ChatParams {
     messages: vec![
@@ -88,7 +88,7 @@ while let Some(event) = stream.next().await {
 Check what a provider supports before using advanced features:
 
 ```rust
-use llm_stack_core::Capability;
+use llm_stack::Capability;
 
 let meta = provider.metadata();
 println!("Model: {}", meta.model);
@@ -162,7 +162,7 @@ OllamaConfig {
 Use `DynProvider` to work with providers as trait objects:
 
 ```rust
-use llm_stack_core::DynProvider;
+use llm_stack::DynProvider;
 
 fn get_provider(name: &str) -> Box<dyn DynProvider> {
     match name {
@@ -199,7 +199,7 @@ register_ollama();
 ### Building from config
 
 ```rust
-use llm_stack_core::{ProviderRegistry, ProviderConfig};
+use llm_stack::{ProviderRegistry, ProviderConfig};
 
 let config = ProviderConfig::new("anthropic", "claude-sonnet-4-20250514")
     .api_key(std::env::var("ANTHROPIC_API_KEY")?)
@@ -214,7 +214,7 @@ let response = provider.generate_boxed(&params).await?;
 `ProviderConfig` has common fields plus an `extra` map for provider-specific options:
 
 ```rust
-use llm_stack_core::ProviderConfig;
+use llm_stack::ProviderConfig;
 use std::time::Duration;
 
 let config = ProviderConfig {
@@ -247,7 +247,7 @@ let config = ProviderConfig::new("openai", "gpt-4o")
 Third-party crates can implement `ProviderFactory` to integrate with the registry:
 
 ```rust
-use llm_stack_core::{ProviderFactory, ProviderConfig, DynProvider, LlmError};
+use llm_stack::{ProviderFactory, ProviderConfig, DynProvider, LlmError};
 
 pub struct MyProviderFactory;
 
@@ -269,7 +269,7 @@ impl ProviderFactory for MyProviderFactory {
 }
 
 // Register at startup
-llm_stack_core::ProviderRegistry::global().register(Box::new(MyProviderFactory));
+llm_stack::ProviderRegistry::global().register(Box::new(MyProviderFactory));
 ```
 
 ### Loading from TOML/JSON
@@ -278,7 +278,7 @@ A typical pattern is loading provider config from a file:
 
 ```rust
 use serde::Deserialize;
-use llm_stack_core::{ProviderConfig, ProviderRegistry};
+use llm_stack::{ProviderConfig, ProviderRegistry};
 use std::collections::HashMap;
 
 #[derive(Deserialize)]
@@ -290,7 +290,7 @@ struct AppConfig {
     extra: HashMap<String, serde_json::Value>,
 }
 
-fn load_provider(app_config: &AppConfig) -> Result<Box<dyn llm_stack_core::DynProvider>, llm_stack_core::LlmError> {
+fn load_provider(app_config: &AppConfig) -> Result<Box<dyn llm_stack::DynProvider>, llm_stack::LlmError> {
     let config = ProviderConfig {
         provider: app_config.provider.clone(),
         api_key: app_config.api_key.clone(),
@@ -309,7 +309,7 @@ fn load_provider(app_config: &AppConfig) -> Result<Box<dyn llm_stack_core::DynPr
 Provider errors are normalized to `LlmError`:
 
 ```rust
-use llm_stack_core::LlmError;
+use llm_stack::LlmError;
 
 match provider.generate(&params).await {
     Ok(response) => { /* ... */ }
@@ -339,7 +339,7 @@ The `retryable` flag indicates whether the error is transient. Use the intercept
 Implement `Provider` to add support for other LLM services. With Rust 2024's async-fn-in-traits, no macro is needed:
 
 ```rust
-use llm_stack_core::{Provider, ChatParams, ChatResponse, ChatStream, ProviderMetadata, LlmError, Capability};
+use llm_stack::{Provider, ChatParams, ChatResponse, ChatStream, ProviderMetadata, LlmError, Capability};
 use std::collections::HashSet;
 
 struct MyProvider { /* ... */ }

@@ -1,4 +1,4 @@
-//! # llm-stack-core
+//! # llm-stack
 //!
 //! Provider-agnostic types and traits for interacting with large language models.
 //!
@@ -26,9 +26,9 @@
 //! # Quick start
 //!
 //! ```rust,no_run
-//! use llm_stack_core::{ChatMessage, ChatParams, Provider};
+//! use llm_stack::{ChatMessage, ChatParams, Provider};
 //!
-//! # async fn example(provider: impl Provider) -> Result<(), llm_stack_core::LlmError> {
+//! # async fn example(provider: impl Provider) -> Result<(), llm_stack::LlmError> {
 //! let params = ChatParams {
 //!     messages: vec![ChatMessage::user("Explain ownership in Rust")],
 //!     max_tokens: Some(1024),

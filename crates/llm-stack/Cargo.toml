@@ -1,5 +1,5 @@
 [package]
-name = "llm-stack-core"
+name = "llm-stack"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -11,7 +11,7 @@ keywords.workspace = true
 categories.workspace = true
 authors.workspace = true
 description = "Core traits, types, and tools for the llm-stack SDK"
-documentation = "https://docs.rs/llm-stack-core"
+documentation = "https://docs.rs/llm-stack"
 
 [lints]
 workspace = true

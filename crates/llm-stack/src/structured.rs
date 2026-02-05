@@ -9,8 +9,8 @@
 //! returns a fully validated, deserialized `T`:
 //!
 //! ```rust,no_run
-//! use llm_stack_core::structured::{generate_object, GenerateObjectConfig};
-//! use llm_stack_core::{ChatMessage, ChatParams};
+//! use llm_stack::structured::{generate_object, GenerateObjectConfig};
+//! use llm_stack::{ChatMessage, ChatParams};
 //! use serde::Deserialize;
 //!
 //! #[derive(Deserialize, schemars::JsonSchema)]
@@ -19,7 +19,7 @@
 //!     age: u32,
 //! }
 //!
-//! # async fn example(provider: &dyn llm_stack_core::DynProvider) -> Result<(), llm_stack_core::LlmError> {
+//! # async fn example(provider: &dyn llm_stack::DynProvider) -> Result<(), llm_stack::LlmError> {
 //! let params = ChatParams {
 //!     messages: vec![ChatMessage::user("Generate a person named Alice aged 30")],
 //!     ..Default::default()

@@ -25,8 +25,8 @@ use crate::provider::ToolDefinition;
 /// # Example with Context
 ///
 /// ```rust
-/// use llm_stack_core::tool::{ToolHandler, ToolOutput, ToolError};
-/// use llm_stack_core::{ToolDefinition, JsonSchema};
+/// use llm_stack::tool::{ToolHandler, ToolOutput, ToolError};
+/// use llm_stack::{ToolDefinition, JsonSchema};
 /// use serde_json::{json, Value};
 /// use std::future::Future;
 /// use std::pin::Pin;

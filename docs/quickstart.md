@@ -8,7 +8,7 @@ Add llm-stack to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-llm-stack-core = "0.1"
+llm-stack = "0.1"
 llm-stack-anthropic = "0.1"  # or llm-stack-openai, llm-stack-ollama
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 ```
@@ -22,7 +22,7 @@ export ANTHROPIC_API_KEY="sk-ant-..."
 ```
 
 ```rust
-use llm_stack_core::{ChatMessage, ChatParams, Provider};
+use llm_stack::{ChatMessage, ChatParams, Provider};
 use llm_stack_anthropic::AnthropicProvider;
 
 #[tokio::main]
@@ -62,7 +62,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 A conversation is a list of `ChatMessage`s. Each message has a role and one or more content blocks.
 
 ```rust
-use llm_stack_core::{ChatMessage, ChatRole, ContentBlock};
+use llm_stack::{ChatMessage, ChatRole, ContentBlock};
 
 // Simple text messages (most common)
 let system = ChatMessage::system("You are a helpful assistant.");
@@ -76,7 +76,7 @@ let multimodal = ChatMessage {
         ContentBlock::Text("Describe this image.".into()),
         ContentBlock::Image {
             media_type: "image/png".into(),
-            data: llm_stack_core::ImageSource::Base64("...".into()),
+            data: llm_stack::ImageSource::Base64("...".into()),
         },
     ],
 };
@@ -87,7 +87,7 @@ let multimodal = ChatMessage {
 All request configuration goes into `ChatParams`. Only `messages` is required.
 
 ```rust
-use llm_stack_core::{ChatParams, ChatMessage};
+use llm_stack::{ChatParams, ChatMessage};
 
 let params = ChatParams {
     messages: vec![ChatMessage::user("Hello!")],
@@ -107,7 +107,7 @@ let params = ChatParams {
 `ChatResponse` contains the model's output, token usage, and stop reason.
 
 ```rust
-use llm_stack_core::{ChatResponse, ContentBlock, StopReason};
+use llm_stack::{ChatResponse, ContentBlock, StopReason};
 
 fn handle_response(response: &ChatResponse) {
     // Get text content (most common)
@@ -148,7 +148,7 @@ For real-time output, use `stream()` instead of `generate()`:
 
 ```rust
 use futures::StreamExt;
-use llm_stack_core::{ChatParams, ChatMessage, Provider, StreamEvent};
+use llm_stack::{ChatParams, ChatMessage, Provider, StreamEvent};
 use llm_stack_anthropic::AnthropicProvider;
 
 #[tokio::main]
@@ -187,7 +187,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 All errors are `LlmError`. Check `is_retryable()` to know if you should retry:
 
 ```rust
-use llm_stack_core::LlmError;
+use llm_stack::LlmError;
 
 fn handle_error(err: &LlmError) {
     if err.is_retryable() {
@@ -220,8 +220,8 @@ fn handle_error(err: &LlmError) {
 Test LLM-dependent code without network calls:
 
 ```rust
-use llm_stack_core::test_helpers::mock_for;
-use llm_stack_core::{ChatParams, ChatMessage, ChatResponse, ContentBlock, Provider};
+use llm_stack::test_helpers::mock_for;
+use llm_stack::{ChatParams, ChatMessage, ChatResponse, ContentBlock, Provider};
 
 #[tokio::test]
 async fn test_my_feature() {
@@ -252,10 +252,10 @@ async fn test_my_feature() {
 The same code works with any provider:
 
 ```rust
-use llm_stack_core::{ChatParams, ChatMessage, Provider};
+use llm_stack::{ChatParams, ChatMessage, Provider};
 
 // Works with any provider!
-async fn ask_question(provider: &impl Provider) -> Result<String, llm_stack_core::LlmError> {
+async fn ask_question(provider: &impl Provider) -> Result<String, llm_stack::LlmError> {
     let params = ChatParams {
         messages: vec![ChatMessage::user("What is 2+2?")],
         ..Default::default()

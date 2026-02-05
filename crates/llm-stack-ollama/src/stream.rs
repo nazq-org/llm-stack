@@ -5,10 +5,10 @@
 //! line), not SSE. Each line is a complete chunk with `done: true/false`.
 
 use futures::stream::StreamExt;
-use llm_stack_core::chat::{StopReason, ToolCall};
-use llm_stack_core::error::LlmError;
-use llm_stack_core::stream::{ChatStream, StreamEvent};
-use llm_stack_core::usage::Usage;
+use llm_stack::chat::{StopReason, ToolCall};
+use llm_stack::error::LlmError;
+use llm_stack::stream::{ChatStream, StreamEvent};
+use llm_stack::usage::Usage;
 
 use crate::types::StreamChunk;
 

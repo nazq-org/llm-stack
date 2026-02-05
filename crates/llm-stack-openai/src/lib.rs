@@ -1,6 +1,6 @@
-//! `OpenAI` provider for the `llm_rs` SDK.
+//! `OpenAI` provider for the llm-stack SDK.
 //!
-//! This crate implements [`Provider`](llm_stack_core::Provider) for `OpenAI`'s
+//! This crate implements [`Provider`](llm_stack::Provider) for `OpenAI`'s
 //! Chat Completions API, supporting both non-streaming and streaming
 //! generation with tool calling and structured output.
 //!
@@ -8,9 +8,9 @@
 //!
 //! ```rust,no_run
 //! use llm_stack_openai::{OpenAiConfig, OpenAiProvider};
-//! use llm_stack_core::{ChatMessage, ChatParams, Provider};
+//! use llm_stack::{ChatMessage, ChatParams, Provider};
 //!
-//! # async fn example() -> Result<(), llm_stack_core::LlmError> {
+//! # async fn example() -> Result<(), llm_stack::LlmError> {
 //! let provider = OpenAiProvider::new(OpenAiConfig {
 //!     api_key: std::env::var("OPENAI_API_KEY").unwrap(),
 //!     ..Default::default()

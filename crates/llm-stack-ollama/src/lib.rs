@@ -1,6 +1,6 @@
-//! Ollama provider for the `llm_rs` SDK.
+//! Ollama provider for the llm-stack SDK.
 //!
-//! This crate implements [`Provider`](llm_stack_core::Provider) for Ollama's
+//! This crate implements [`Provider`](llm_stack::Provider) for Ollama's
 //! Chat API, supporting both non-streaming and streaming generation
 //! with tool calling.
 //!
@@ -10,9 +10,9 @@
 //!
 //! ```rust,no_run
 //! use llm_stack_ollama::{OllamaConfig, OllamaProvider};
-//! use llm_stack_core::{ChatMessage, ChatParams, Provider};
+//! use llm_stack::{ChatMessage, ChatParams, Provider};
 //!
-//! # async fn example() -> Result<(), llm_stack_core::LlmError> {
+//! # async fn example() -> Result<(), llm_stack::LlmError> {
 //! let provider = OllamaProvider::new(OllamaConfig::default());
 //!
 //! let params = ChatParams {

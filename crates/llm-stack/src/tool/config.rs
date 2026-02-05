@@ -55,7 +55,7 @@ pub enum StopDecision {
 /// # Example
 ///
 /// ```rust
-/// use llm_stack_core::tool::{LoopDetectionConfig, LoopAction};
+/// use llm_stack::tool::{LoopDetectionConfig, LoopAction};
 ///
 /// let config = LoopDetectionConfig {
 ///     threshold: 3,  // Trigger after 3 consecutive identical calls
@@ -114,7 +114,7 @@ pub enum LoopAction {
 /// # Example
 ///
 /// ```rust,no_run
-/// use llm_stack_core::tool::{ToolLoopConfig, ToolLoopEvent};
+/// use llm_stack::tool::{ToolLoopConfig, ToolLoopEvent};
 /// use std::sync::Arc;
 ///
 /// let config = ToolLoopConfig {
@@ -219,7 +219,7 @@ pub struct ToolLoopConfig {
     /// # Example
     ///
     /// ```rust,no_run
-    /// use llm_stack_core::tool::{ToolLoopConfig, StopDecision};
+    /// use llm_stack::tool::{ToolLoopConfig, StopDecision};
     /// use std::sync::Arc;
     ///
     /// let config = ToolLoopConfig {
@@ -244,7 +244,7 @@ pub struct ToolLoopConfig {
     /// # Example
     ///
     /// ```rust
-    /// use llm_stack_core::tool::{ToolLoopConfig, LoopDetectionConfig, LoopAction};
+    /// use llm_stack::tool::{ToolLoopConfig, LoopDetectionConfig, LoopAction};
     ///
     /// let config = ToolLoopConfig {
     ///     loop_detection: Some(LoopDetectionConfig {
@@ -264,7 +264,7 @@ pub struct ToolLoopConfig {
     /// # Example
     ///
     /// ```rust
-    /// use llm_stack_core::tool::ToolLoopConfig;
+    /// use llm_stack::tool::ToolLoopConfig;
     /// use std::time::Duration;
     ///
     /// let config = ToolLoopConfig {
@@ -289,7 +289,7 @@ pub struct ToolLoopConfig {
     /// # Example
     ///
     /// ```rust
-    /// use llm_stack_core::tool::ToolLoopConfig;
+    /// use llm_stack::tool::ToolLoopConfig;
     ///
     /// // Master/Worker pattern: master=0, worker=1, no grandchildren
     /// let config = ToolLoopConfig {
@@ -366,7 +366,7 @@ pub struct ToolLoopResult {
 /// # Example
 ///
 /// ```rust,no_run
-/// use llm_stack_core::tool::TerminationReason;
+/// use llm_stack::tool::TerminationReason;
 /// use std::time::Duration;
 ///
 /// # fn check_result(reason: TerminationReason) {

@@ -5,8 +5,8 @@ Get typed, validated responses from LLMs. Instead of parsing free-form text, def
 ## Quick example
 
 ```rust
-use llm_stack_core::{ChatMessage, ChatParams};
-use llm_stack_core::structured::{generate_object, GenerateObjectConfig};
+use llm_stack::{ChatMessage, ChatParams};
+use llm_stack::structured::{generate_object, GenerateObjectConfig};
 use serde::Deserialize;
 use schemars::JsonSchema;
 
@@ -132,7 +132,7 @@ struct Company {
 Control retry behavior and schema handling:
 
 ```rust
-use llm_stack_core::structured::GenerateObjectConfig;
+use llm_stack::structured::GenerateObjectConfig;
 
 let config = GenerateObjectConfig {
     max_attempts: 3,             // Retry up to 3 times on validation failure
@@ -197,8 +197,8 @@ println!("Tokens: {}", result.usage.input_tokens + result.usage.output_tokens);
 For long outputs, stream partial objects:
 
 ```rust
-use llm_stack_core::structured::{stream_object_async, collect_stream_object, PartialObject};
-use llm_stack_core::provider::JsonSchema;
+use llm_stack::structured::{stream_object_async, collect_stream_object, PartialObject};
+use llm_stack::provider::JsonSchema;
 use futures::StreamExt;
 
 let schema = JsonSchema::from_type::<Person>()?;
@@ -221,7 +221,7 @@ Streaming is useful for:
 ## Error handling
 
 ```rust
-use llm_stack_core::LlmError;
+use llm_stack::LlmError;
 
 match generate_object::<Person>(provider, params, config).await {
     Ok(result) => println!("{:?}", result.value),
@@ -305,7 +305,7 @@ struct Task {
 Check provider capabilities before relying on structured output:
 
 ```rust
-use llm_stack_core::Capability;
+use llm_stack::Capability;
 
 let meta = provider.metadata();
 if !meta.capabilities.contains(&Capability::StructuredOutput) {

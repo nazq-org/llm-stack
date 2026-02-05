@@ -1,7 +1,7 @@
 //! Factory for building Ollama providers from configuration.
 
-use llm_stack_core::registry::{ProviderConfig, ProviderFactory};
-use llm_stack_core::{DynProvider, LlmError};
+use llm_stack::registry::{ProviderConfig, ProviderFactory};
+use llm_stack::{DynProvider, LlmError};
 
 use crate::{OllamaConfig, OllamaProvider};
 
@@ -11,7 +11,7 @@ use crate::{OllamaConfig, OllamaProvider};
 /// provider instantiation:
 ///
 /// ```rust,no_run
-/// use llm_stack_core::ProviderRegistry;
+/// use llm_stack::ProviderRegistry;
 /// use llm_stack_ollama::OllamaFactory;
 ///
 /// ProviderRegistry::global().register(Box::new(OllamaFactory));
@@ -63,7 +63,7 @@ impl ProviderFactory for OllamaFactory {
 /// Call this once at application startup to enable config-driven
 /// Ollama provider creation.
 pub fn register_global() {
-    llm_stack_core::ProviderRegistry::global().register(Box::new(OllamaFactory));
+    llm_stack::ProviderRegistry::global().register(Box::new(OllamaFactory));
 }
 
 #[cfg(test)]

@@ -19,8 +19,8 @@ use crate::provider::ToolDefinition;
 /// # Example
 ///
 /// ```rust
-/// use llm_stack_core::tool::tool_fn;
-/// use llm_stack_core::{JsonSchema, ToolDefinition};
+/// use llm_stack::tool::tool_fn;
+/// use llm_stack::{JsonSchema, ToolDefinition};
 /// use serde_json::{json, Value};
 ///
 /// let handler = tool_fn(
@@ -64,8 +64,8 @@ where
 /// # Example
 ///
 /// ```rust
-/// use llm_stack_core::tool::{tool_fn_with_ctx, ToolOutput};
-/// use llm_stack_core::{JsonSchema, ToolDefinition};
+/// use llm_stack::tool::{tool_fn_with_ctx, ToolOutput};
+/// use llm_stack::{JsonSchema, ToolDefinition};
 /// use serde_json::{json, Value};
 ///
 /// struct AppContext {

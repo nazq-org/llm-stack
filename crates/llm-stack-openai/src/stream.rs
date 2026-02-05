@@ -7,10 +7,10 @@
 use std::collections::HashMap;
 
 use futures::stream::StreamExt;
-use llm_stack_core::chat::{StopReason, ToolCall};
-use llm_stack_core::error::LlmError;
-use llm_stack_core::stream::{ChatStream, StreamEvent};
-use llm_stack_core::usage::Usage;
+use llm_stack::chat::{StopReason, ToolCall};
+use llm_stack::error::LlmError;
+use llm_stack::stream::{ChatStream, StreamEvent};
+use llm_stack::usage::Usage;
 use serde_json::Value;
 
 use crate::convert::convert_stop_reason;

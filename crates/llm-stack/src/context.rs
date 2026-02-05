@@ -16,8 +16,8 @@
 //! # Example
 //!
 //! ```rust
-//! use llm_stack_core::context::ContextWindow;
-//! use llm_stack_core::ChatMessage;
+//! use llm_stack::context::ContextWindow;
+//! use llm_stack::ChatMessage;
 //!
 //! // 8K context window, reserve 1K for output
 //! let mut window = ContextWindow::new(8000, 1000);
@@ -166,8 +166,8 @@ impl ContextWindow {
     /// # Example
     ///
     /// ```rust
-    /// use llm_stack_core::context::ContextWindow;
-    /// use llm_stack_core::ChatMessage;
+    /// use llm_stack::context::ContextWindow;
+    /// use llm_stack::ChatMessage;
     ///
     /// let mut window = ContextWindow::new(1000, 200);
     /// window.push(ChatMessage::user("Hello"), 700);

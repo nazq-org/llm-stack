@@ -10,7 +10,7 @@
 //! # Example
 //!
 //! ```rust,no_run
-//! use llm_stack_core::registry::{ProviderRegistry, ProviderConfig};
+//! use llm_stack::registry::{ProviderRegistry, ProviderConfig};
 //!
 //! // Get the global registry (providers register themselves on startup)
 //! let registry = ProviderRegistry::global();
@@ -31,7 +31,7 @@
 //! Provider crates register their factory on initialization:
 //!
 //! ```rust,ignore
-//! use llm_stack_core::registry::{ProviderRegistry, ProviderFactory, ProviderConfig};
+//! use llm_stack::registry::{ProviderRegistry, ProviderFactory, ProviderConfig};
 //!
 //! struct MyProviderFactory;
 //!
@@ -217,7 +217,7 @@ impl ProviderRegistry {
     /// # Example
     ///
     /// ```rust,ignore
-    /// use llm_stack_core::registry::{ProviderRegistry, ProviderFactory};
+    /// use llm_stack::registry::{ProviderRegistry, ProviderFactory};
     ///
     /// ProviderRegistry::global().register(Box::new(MyProviderFactory));
     /// ```
