@@ -1,20 +1,22 @@
-name: Release PR
+name: Release
 
 on:
-  push:
+  pull_request:
+    types: [closed]
     branches:
       - main
 
 permissions:
   contents: write
-  pull-requests: write
 
 jobs:
-  release-plz-pr:
-    name: Release PR
+  release:
+    name: Publish to crates.io
     runs-on: self-hosted
+    # Only run when a release PR is merged (not closed without merging)
+    if: github.event.pull_request.merged == true && contains(github.event.pull_request.labels.*.name, 'release')
     concurrency:
-      group: release-plz-${{ github.ref }}
+      group: release-publish
       cancel-in-progress: false
     steps:
       - name: Checkout repository
@@ -26,10 +28,13 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Create tmp directory
+        run: mkdir -p tmp
+
       - name: Run release-plz
         uses: release-plz/action@v0.5
         with:
-          command: release-pr
+          command: release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
