@@ -8,19 +8,30 @@
 //! providers live in sibling crates and implement [`Provider`] (or its
 //! object-safe counterpart [`DynProvider`]).
 //!
+//! # Provider Crates
+//!
+//! Official provider implementations:
+//!
+//! | Crate | Provider | Features |
+//! |-------|----------|----------|
+//! | [`llm-stack-anthropic`](https://docs.rs/llm-stack-anthropic) | Claude (Anthropic) | Streaming, tools, vision, caching |
+//! | [`llm-stack-openai`](https://docs.rs/llm-stack-openai) | GPT (`OpenAI`) | Streaming, tools, structured output |
+//! | [`llm-stack-ollama`](https://docs.rs/llm-stack-ollama) | Ollama (local) | Streaming, tools |
+//!
 //! # Architecture
 //!
 //! ```text
-//!  ┌──────────────┐   ┌──────────────┐   ┌──────────────┐
-//!  │  anthropic   │   │   openai     │   │  your-own    │
-//!  │  (provider)  │   │  (provider)  │   │  (provider)  │
-//!  └──────┬───────┘   └──────┬───────┘   └──────┬───────┘
-//!         │                  │                  │
-//!         └─────────┬────────┴──────────────────┘
-//!                   │
-//!            ┌──────▼──────┐
-//!            │  llm-core   │  ← you are here
-//!            └─────────────┘
+//!  ┌───────────────────┐ ┌───────────────────┐ ┌───────────────────┐
+//!  │ llm-stack-anthropic│ │  llm-stack-openai │ │  llm-stack-ollama │
+//!  └─────────┬─────────┘ └─────────┬─────────┘ └─────────┬─────────┘
+//!            │                     │                     │
+//!            └──────────┬──────────┴──────────┬──────────┘
+//!                       │                     │
+//!                       ▼                     ▼
+//!              ┌─────────────────────────────────────┐
+//!              │             llm-stack               │  ← you are here
+//!              │  (Provider trait, ChatParams, etc.) │
+//!              └─────────────────────────────────────┘
 //! ```
 //!
 //! # Quick start
