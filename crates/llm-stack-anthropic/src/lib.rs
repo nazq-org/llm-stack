@@ -1,4 +1,4 @@
-//! Anthropic Claude provider for the `llm_rs` SDK.
+//! Anthropic Claude provider for the llm-stack SDK.
 //!
 //! This crate implements [`Provider`](llm_stack_core::Provider) for Anthropic's
 //! Messages API, supporting both non-streaming and streaming generation
