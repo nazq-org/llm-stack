@@ -5,6 +5,9 @@
 # Use conventional commits for changelog generation
 changelog_config = "cliff.toml"
 
+# Generate root CHANGELOG.md with all changes
+changelog_path = "CHANGELOG.md"
+
 # Create a single PR for all workspace crates
 pr_draft = false
 pr_labels = ["release"]
@@ -20,19 +23,23 @@ git_tag_name = "{{ package }}-v{{ version }}"
 git_release_name = "{{ package }} v{{ version }}"
 git_release_draft = false
 
-# Changelog settings
+# Per-crate changelog settings (in addition to root)
 [[package]]
 name = "llm-stack-core"
+changelog_path = "crates/llm-stack-core/CHANGELOG.md"
 changelog_include = ["llm-stack-core"]
 
 [[package]]
 name = "llm-stack-anthropic"
+changelog_path = "crates/llm-stack-anthropic/CHANGELOG.md"
 changelog_include = ["llm-stack-anthropic"]
 
 [[package]]
 name = "llm-stack-openai"
+changelog_path = "crates/llm-stack-openai/CHANGELOG.md"
 changelog_include = ["llm-stack-openai"]
 
 [[package]]
 name = "llm-stack-ollama"
+changelog_path = "crates/llm-stack-ollama/CHANGELOG.md"
 changelog_include = ["llm-stack-ollama"]
