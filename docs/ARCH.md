@@ -2,7 +2,7 @@
 
 ## Overview
 
-llm-stack is a workspace of focused crates. Application code depends on `llm-stack-core` for types and traits, plus whichever provider crates it needs. The interceptor system handles cross-cutting concerns like retry, logging, and approval gates.
+llm-stack is a workspace of focused crates. Application code depends on `llm-stack` for types and traits, plus whichever provider crates it needs. The interceptor system handles cross-cutting concerns like retry, logging, and approval gates.
 
 ```
  Application
@@ -14,7 +14,7 @@ llm-stack is a workspace of focused crates. Application code depends on `llm-sta
      +--- ToolExec domain    (wraps tool executions)
      |
      v
- Provider trait            (llm-stack-core)
+ Provider trait            (llm-stack)
      |
      +--- AnthropicProvider  (llm-stack-anthropic)
      +--- OpenAiProvider     (llm-stack-openai)
@@ -107,7 +107,7 @@ The `index` field on each event identifies which tool call it belongs to when th
 
 Costs use integer microdollars (1 USD = 1,000,000 microdollars) to avoid floating-point accumulation errors across thousands of API calls. The `Cost` type enforces `total == input + output` at construction time through private fields and a checked constructor.
 
-## Module map (`llm-stack-core`)
+## Module map (`llm-stack`)
 
 ```
 src/

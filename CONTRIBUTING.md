@@ -128,7 +128,7 @@ async fn test_my_feature() {
 
 ### Modifying Core Types
 
-Core types in `llm-stack-core` are public API. Changes require:
+Core types in `llm-stack` are public API. Changes require:
 
 - Backwards compatibility (or clear migration path)
 - Documentation updates

@@ -1,6 +1,6 @@
 //! Anthropic Claude provider for the llm-stack SDK.
 //!
-//! This crate implements [`Provider`](llm_stack_core::Provider) for Anthropic's
+//! This crate implements [`Provider`](llm_stack::Provider) for Anthropic's
 //! Messages API, supporting both non-streaming and streaming generation
 //! with full tool-calling and extended thinking support.
 //!
@@ -8,9 +8,9 @@
 //!
 //! ```rust,no_run
 //! use llm_stack_anthropic::{AnthropicConfig, AnthropicProvider};
-//! use llm_stack_core::{ChatMessage, ChatParams, Provider};
+//! use llm_stack::{ChatMessage, ChatParams, Provider};
 //!
-//! # async fn example() -> Result<(), llm_stack_core::LlmError> {
+//! # async fn example() -> Result<(), llm_stack::LlmError> {
 //! let provider = AnthropicProvider::new(AnthropicConfig {
 //!     api_key: std::env::var("ANTHROPIC_API_KEY").unwrap(),
 //!     ..Default::default()

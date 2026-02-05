@@ -13,9 +13,9 @@
 //! ```
 
 use futures::StreamExt;
-use llm_stack_core::StreamEvent;
-use llm_stack_core::chat::{ChatMessage, ContentBlock, StopReason};
-use llm_stack_core::provider::{ChatParams, JsonSchema, Provider, ToolChoice, ToolDefinition};
+use llm_stack::StreamEvent;
+use llm_stack::chat::{ChatMessage, ContentBlock, StopReason};
+use llm_stack::provider::{ChatParams, JsonSchema, Provider, ToolChoice, ToolDefinition};
 use llm_stack_ollama::{OllamaConfig, OllamaProvider};
 
 /// The model to use for integration tests.
@@ -236,11 +236,11 @@ async fn test_metadata() {
     assert_eq!(meta.model, TEST_MODEL);
     assert!(
         meta.capabilities
-            .contains(&llm_stack_core::provider::Capability::Tools)
+            .contains(&llm_stack::provider::Capability::Tools)
     );
     assert!(
         meta.capabilities
-            .contains(&llm_stack_core::provider::Capability::Vision)
+            .contains(&llm_stack::provider::Capability::Vision)
     );
 }
 

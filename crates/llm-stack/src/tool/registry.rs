@@ -28,8 +28,8 @@ use crate::provider::{ToolDefinition, ToolRetryConfig};
 /// like logging, approval gates, or rate limiting:
 ///
 /// ```rust,ignore
-/// use llm_stack_core::{ToolRegistry, tool_fn};
-/// use llm_stack_core::intercept::{InterceptorStack, ToolExec, Approval, ApprovalDecision};
+/// use llm_stack::{ToolRegistry, tool_fn};
+/// use llm_stack::intercept::{InterceptorStack, ToolExec, Approval, ApprovalDecision};
 ///
 /// let mut registry: ToolRegistry<()> = ToolRegistry::new()
 ///     .with_interceptors(
@@ -149,7 +149,7 @@ impl<Ctx: Send + Sync + 'static> ToolRegistry<Ctx> {
     /// # Example
     ///
     /// ```rust
-    /// use llm_stack_core::ToolRegistry;
+    /// use llm_stack::ToolRegistry;
     ///
     /// let master_registry: ToolRegistry<()> = ToolRegistry::new();
     /// // ... register tools ...
@@ -180,7 +180,7 @@ impl<Ctx: Send + Sync + 'static> ToolRegistry<Ctx> {
     /// # Example
     ///
     /// ```rust
-    /// use llm_stack_core::ToolRegistry;
+    /// use llm_stack::ToolRegistry;
     ///
     /// let full_registry: ToolRegistry<()> = ToolRegistry::new();
     /// // ... register tools ...
@@ -212,8 +212,8 @@ impl<Ctx: Send + Sync + 'static> ToolRegistry<Ctx> {
     /// # Example
     ///
     /// ```rust,ignore
-    /// use llm_stack_core::{ToolRegistry, tool_fn};
-    /// use llm_stack_core::intercept::{InterceptorStack, ToolExec, Approval, ApprovalDecision, Retry};
+    /// use llm_stack::{ToolRegistry, tool_fn};
+    /// use llm_stack::intercept::{InterceptorStack, ToolExec, Approval, ApprovalDecision, Retry};
     ///
     /// let registry: ToolRegistry<()> = ToolRegistry::new()
     ///     .with_interceptors(

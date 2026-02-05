@@ -2,10 +2,10 @@
 
 use std::collections::HashSet;
 
-use llm_stack_core::ChatResponse;
-use llm_stack_core::error::LlmError;
-use llm_stack_core::provider::{Capability, ChatParams, Provider, ProviderMetadata};
-use llm_stack_core::stream::ChatStream;
+use llm_stack::ChatResponse;
+use llm_stack::error::LlmError;
+use llm_stack::provider::{Capability, ChatParams, Provider, ProviderMetadata};
+use llm_stack::stream::ChatStream;
 use tracing::instrument;
 
 use crate::config::OllamaConfig;
@@ -20,9 +20,9 @@ use crate::convert;
 ///
 /// ```rust,no_run
 /// use llm_stack_ollama::{OllamaConfig, OllamaProvider};
-/// use llm_stack_core::{ChatParams, ChatMessage, Provider};
+/// use llm_stack::{ChatParams, ChatMessage, Provider};
 ///
-/// # async fn example() -> Result<(), llm_stack_core::LlmError> {
+/// # async fn example() -> Result<(), llm_stack::LlmError> {
 /// let provider = OllamaProvider::new(OllamaConfig::default());
 ///
 /// let response = provider.generate(&ChatParams {

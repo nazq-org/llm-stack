@@ -2,10 +2,10 @@
 
 use std::collections::HashSet;
 
-use llm_stack_core::ChatResponse;
-use llm_stack_core::error::LlmError;
-use llm_stack_core::provider::{Capability, ChatParams, Provider, ProviderMetadata};
-use llm_stack_core::stream::ChatStream;
+use llm_stack::ChatResponse;
+use llm_stack::error::LlmError;
+use llm_stack::provider::{Capability, ChatParams, Provider, ProviderMetadata};
+use llm_stack::stream::ChatStream;
 use reqwest::header::{HeaderMap, HeaderValue};
 use tracing::instrument;
 
@@ -21,9 +21,9 @@ use crate::convert;
 ///
 /// ```rust,no_run
 /// use llm_stack_openai::{OpenAiConfig, OpenAiProvider};
-/// use llm_stack_core::{ChatParams, ChatMessage, Provider};
+/// use llm_stack::{ChatParams, ChatMessage, Provider};
 ///
-/// # async fn example() -> Result<(), llm_stack_core::LlmError> {
+/// # async fn example() -> Result<(), llm_stack::LlmError> {
 /// let provider = OpenAiProvider::new(OpenAiConfig {
 ///     api_key: std::env::var("OPENAI_API_KEY").unwrap(),
 ///     ..Default::default()

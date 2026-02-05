@@ -70,7 +70,7 @@ let image_msg = ChatMessage {
 ### After (`llm-stack`)
 
 ```rust
-use llm_stack_core::{ChatMessage, ChatRole, ContentBlock, ImageSource};
+use llm_stack::{ChatMessage, ChatRole, ContentBlock, ImageSource};
 
 let messages = vec![
     ChatMessage::user("Hello!"),
@@ -121,7 +121,7 @@ while let Some(chunk) = stream.next().await {
 ### After (`llm-stack`)
 
 ```rust
-use llm_stack_core::{Provider, ChatParams, StreamEvent};
+use llm_stack::{Provider, ChatParams, StreamEvent};
 use futures::StreamExt;
 
 // Basic chat
@@ -183,7 +183,7 @@ let tool = Tool {
 ### After (`llm-stack`)
 
 ```rust
-use llm_stack_core::ToolDefinition;
+use llm_stack::ToolDefinition;
 use serde_json::json;
 
 let tool = ToolDefinition::new(
@@ -224,7 +224,7 @@ if let Some(tool_calls) = response.tool_calls() {
 Automatic tool loop with `ToolRegistry` and `tool_fn`:
 
 ```rust
-use llm_stack_core::{ToolRegistry, tool_fn, tool_loop, ToolLoopConfig, ToolDefinition, JsonSchema};
+use llm_stack::{ToolRegistry, tool_fn, tool_loop, ToolLoopConfig, ToolDefinition, JsonSchema};
 use serde_json::json;
 
 let weather_tool = tool_fn(
@@ -273,7 +273,7 @@ while let Some(chunk) = stream.next().await {
 ### After (`llm-stack`)
 
 ```rust
-use llm_stack_core::StreamEvent;
+use llm_stack::StreamEvent;
 
 let mut stream = provider.stream(&params).await?;
 while let Some(event) = stream.next().await {
@@ -306,7 +306,7 @@ match result {
 ### After (`llm-stack`)
 
 ```rust
-use llm_stack_core::LlmError;
+use llm_stack::LlmError;
 
 match result {
     Err(LlmError::Http { status, message, retryable }) => {
@@ -340,7 +340,7 @@ let resilient = ResilientLLM::new(
 ### After (`llm-stack`)
 
 ```rust
-use llm_stack_core::intercept::{InterceptorStack, Retry, LlmCall};
+use llm_stack::intercept::{InterceptorStack, Retry, LlmCall};
 use std::time::Duration;
 
 // Using the interceptor system for LLM calls
@@ -353,8 +353,8 @@ let interceptors = InterceptorStack::<LlmCall>::new()
     });
 
 // Or for tool execution with ToolRegistry
-use llm_stack_core::ToolRegistry;
-use llm_stack_core::intercept::{InterceptorStack, Retry, ToolExec};
+use llm_stack::ToolRegistry;
+use llm_stack::intercept::{InterceptorStack, Retry, ToolExec};
 
 let registry: ToolRegistry<()> = ToolRegistry::new()
     .with_interceptors(
@@ -418,7 +418,7 @@ let format = StructuredOutputFormat {
 ### After (`llm-stack`)
 
 ```rust
-use llm_stack_core::structured::{generate_object, GenerateObjectConfig};
+use llm_stack::structured::{generate_object, GenerateObjectConfig};
 use serde::Deserialize;
 use schemars::JsonSchema;
 
@@ -452,7 +452,7 @@ let memory = SlidingWindowMemory::new(10, TrimStrategy::OldestFirst);
 ### After (`llm-stack`)
 
 ```rust
-use llm_stack_core::context::ContextWindow;
+use llm_stack::context::ContextWindow;
 
 let mut window = ContextWindow::new(128_000, 4_000);
 

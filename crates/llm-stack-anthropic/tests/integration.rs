@@ -9,10 +9,10 @@
 //! ```
 
 use futures::StreamExt;
+use llm_stack::StreamEvent;
+use llm_stack::chat::{ChatMessage, ContentBlock, StopReason};
+use llm_stack::provider::{ChatParams, JsonSchema, Provider, ToolChoice, ToolDefinition};
 use llm_stack_anthropic::{AnthropicConfig, AnthropicProvider};
-use llm_stack_core::StreamEvent;
-use llm_stack_core::chat::{ChatMessage, ContentBlock, StopReason};
-use llm_stack_core::provider::{ChatParams, JsonSchema, Provider, ToolChoice, ToolDefinition};
 
 /// Helper: create a provider configured for integration tests.
 /// Returns `None` (and the test is skipped) if no API key is set.
@@ -247,7 +247,7 @@ async fn test_invalid_api_key() {
 
     let err = provider.generate(&params).await.unwrap_err();
     assert!(
-        matches!(err, llm_stack_core::LlmError::Auth(_)),
+        matches!(err, llm_stack::LlmError::Auth(_)),
         "Expected Auth error, got: {err:?}"
     );
 }
@@ -261,11 +261,11 @@ async fn test_metadata() {
     assert_eq!(meta.model, "claude-3-5-haiku-20241022");
     assert!(
         meta.capabilities
-            .contains(&llm_stack_core::provider::Capability::Tools)
+            .contains(&llm_stack::provider::Capability::Tools)
     );
     assert!(
         meta.capabilities
-            .contains(&llm_stack_core::provider::Capability::Vision)
+            .contains(&llm_stack::provider::Capability::Vision)
     );
 }
 

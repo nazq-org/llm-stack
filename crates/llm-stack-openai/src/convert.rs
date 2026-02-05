@@ -1,12 +1,12 @@
 //! Bidirectional conversion between `llm-core` types and `OpenAI` API types.
 
-use llm_stack_core::chat::{
+use llm_stack::chat::{
     ChatMessage, ChatResponse, ChatRole, ContentBlock as CoreContent, ImageSource as CoreImage,
     StopReason, ToolCall,
 };
-use llm_stack_core::error::LlmError;
-use llm_stack_core::provider::{ChatParams, ToolChoice};
-use llm_stack_core::usage::Usage;
+use llm_stack::error::LlmError;
+use llm_stack::provider::{ChatParams, ToolChoice};
+use llm_stack::usage::Usage;
 use serde_json::Value;
 use std::collections::HashMap;
 
@@ -323,8 +323,8 @@ pub(crate) fn convert_error(status: http::StatusCode, body: &str) -> LlmError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use llm_stack_core::chat::ChatMessage;
-    use llm_stack_core::provider::{JsonSchema, ToolDefinition};
+    use llm_stack::chat::ChatMessage;
+    use llm_stack::provider::{JsonSchema, ToolDefinition};
 
     #[test]
     fn test_build_request_minimal() {

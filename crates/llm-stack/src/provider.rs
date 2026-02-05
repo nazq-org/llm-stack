@@ -83,11 +83,11 @@ pub trait Provider: Send + Sync {
 /// when you need to erase the concrete provider type:
 ///
 /// ```rust,no_run
-/// use llm_stack_core::{DynProvider, ChatParams};
+/// use llm_stack::{DynProvider, ChatParams};
 ///
 /// async fn ask(provider: &dyn DynProvider, question: &str) -> String {
 ///     let params = ChatParams {
-///         messages: vec![llm_stack_core::ChatMessage::user(question)],
+///         messages: vec![llm_stack::ChatMessage::user(question)],
 ///         ..Default::default()
 ///     };
 ///     let resp = provider.generate_boxed(&params).await.unwrap();
@@ -173,7 +173,7 @@ pub enum Capability {
 /// Use struct-update syntax for concise construction:
 ///
 /// ```rust
-/// use llm_stack_core::{ChatParams, ChatMessage};
+/// use llm_stack::{ChatParams, ChatMessage};
 ///
 /// let params = ChatParams {
 ///     messages: vec![ChatMessage::user("Hello")],
@@ -256,7 +256,7 @@ pub type RetryPredicate = std::sync::Arc<dyn Fn(&str) -> bool + Send + Sync>;
 /// # Example
 ///
 /// ```rust
-/// use llm_stack_core::ToolRetryConfig;
+/// use llm_stack::ToolRetryConfig;
 /// use std::time::Duration;
 ///
 /// let config = ToolRetryConfig {
@@ -349,7 +349,7 @@ pub struct ToolDefinition {
 /// # Construction
 ///
 /// ```rust
-/// use llm_stack_core::JsonSchema;
+/// use llm_stack::JsonSchema;
 ///
 /// // From a raw JSON value
 /// let schema = JsonSchema::new(serde_json::json!({

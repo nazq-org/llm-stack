@@ -12,7 +12,7 @@
 //! can inspect this flag to decide whether to retry automatically:
 //!
 //! ```rust
-//! use llm_stack_core::LlmError;
+//! use llm_stack::LlmError;
 //!
 //! fn should_retry(err: &LlmError) -> bool {
 //!     match err {
@@ -136,7 +136,7 @@ impl LlmError {
     /// # Example
     ///
     /// ```rust
-    /// use llm_stack_core::LlmError;
+    /// use llm_stack::LlmError;
     ///
     /// let err = LlmError::Timeout { elapsed_ms: 5000 };
     /// assert!(err.is_retryable());

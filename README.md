@@ -5,8 +5,8 @@
 **Production-ready Rust SDK for LLM providers**
 
 [![CI](https://github.com/nazq/llm-stack/actions/workflows/ci.yml/badge.svg)](https://github.com/nazq/llm-stack/actions/workflows/ci.yml)
-[![Crates.io](https://img.shields.io/crates/v/llm-stack-core.svg)](https://crates.io/crates/llm-stack-core)
-[![Documentation](https://docs.rs/llm-stack-core/badge.svg)](https://docs.rs/llm-stack-core)
+[![Crates.io](https://img.shields.io/crates/v/llm-stack.svg)](https://crates.io/crates/llm-stack)
+[![Documentation](https://docs.rs/llm-stack/badge.svg)](https://docs.rs/llm-stack)
 [![Rust Version](https://img.shields.io/badge/rust-1.85+-blue.svg)](https://www.rust-lang.org)
 [![License](https://img.shields.io/badge/license-Apache--2.0-green.svg)](LICENSE)
 
@@ -25,7 +25,7 @@
 llm-stack is a unified Rust interface for building LLM-powered applications. Write against one set of types, swap providers without changing application code.
 
 ```rust
-use llm_stack_core::{ChatMessage, ChatParams, Provider};
+use llm_stack::{ChatMessage, ChatParams, Provider};
 use llm_stack_anthropic::AnthropicProvider;
 
 #[tokio::main]
@@ -60,7 +60,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-llm-stack-core = "0.1"
+llm-stack = "0.1"
 llm-stack-anthropic = "0.1"  # or llm-stack-openai, llm-stack-ollama
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 ```
@@ -75,7 +75,7 @@ export ANTHROPIC_API_KEY="sk-ant-..."
 Run:
 
 ```rust
-use llm_stack_core::{ChatMessage, ChatParams, Provider};
+use llm_stack::{ChatMessage, ChatParams, Provider};
 use llm_stack_anthropic::AnthropicProvider;
 
 #[tokio::main]
@@ -124,7 +124,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 Build agentic applications with the tool loop:
 
 ```rust
-use llm_stack_core::{
+use llm_stack::{
     ChatParams, ChatMessage, ToolRegistry, ToolLoopConfig,
     tool::{tool_fn, tool_loop},
     ToolDefinition, JsonSchema,
@@ -173,7 +173,7 @@ println!("Final answer: {}", result.response.text().unwrap_or_default());
 Get typed responses with schema validation:
 
 ```rust
-use llm_stack_core::structured::generate_object;
+use llm_stack::structured::generate_object;
 use serde::Deserialize;
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -199,7 +199,7 @@ println!("{}: {}/10 - {}", review.title, review.rating, review.summary);
 Add cross-cutting concerns without modifying provider code:
 
 ```rust
-use llm_stack_core::intercept::{InterceptorStack, Retry, Timeout, Logging};
+use llm_stack::intercept::{InterceptorStack, Retry, Timeout, Logging};
 use std::time::Duration;
 
 let registry = ToolRegistry::new()
@@ -232,7 +232,7 @@ let registry = ToolRegistry::new()
 cargo doc --open
 ```
 
-Or view on [docs.rs](https://docs.rs/llm-stack-core).
+Or view on [docs.rs](https://docs.rs/llm-stack).
 
 ---
 
@@ -242,7 +242,7 @@ Or view on [docs.rs](https://docs.rs/llm-stack-core).
 
 ```rust
 use futures::StreamExt;
-use llm_stack_core::stream::StreamEvent;
+use llm_stack::stream::StreamEvent;
 
 let mut stream = provider.stream(&params).await?;
 
@@ -258,7 +258,7 @@ while let Some(event) = stream.next().await {
 ### Multi-Provider Setup
 
 ```rust
-use llm_stack_core::{ProviderRegistry, ProviderConfig};
+use llm_stack::{ProviderRegistry, ProviderConfig};
 
 let registry = ProviderRegistry::new()
     .register("claude", AnthropicProvider::from_env()?)
@@ -272,7 +272,7 @@ let provider = registry.get("claude")?;
 ### Testing with MockProvider
 
 ```rust
-use llm_stack_core::test_helpers::mock_for;
+use llm_stack::test_helpers::mock_for;
 
 #[tokio::test]
 async fn test_my_agent() {
@@ -293,7 +293,7 @@ async fn test_my_agent() {
 
 | Crate | Purpose |
 |-------|---------|
-| [`llm-stack-core`](crates/llm-stack-core) | Traits, types, errors, streaming, tools, interceptors |
+| [`llm-stack`](crates/llm-stack) | Traits, types, errors, streaming, tools, interceptors |
 | [`llm-stack-anthropic`](crates/llm-stack-anthropic) | Anthropic Claude provider |
 | [`llm-stack-openai`](crates/llm-stack-openai) | OpenAI GPT provider |
 | [`llm-stack-ollama`](crates/llm-stack-ollama) | Ollama local provider |

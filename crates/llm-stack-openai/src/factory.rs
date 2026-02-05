@@ -1,7 +1,7 @@
 //! Factory for building `OpenAI` providers from configuration.
 
-use llm_stack_core::registry::{ProviderConfig, ProviderFactory};
-use llm_stack_core::{DynProvider, LlmError};
+use llm_stack::registry::{ProviderConfig, ProviderFactory};
+use llm_stack::{DynProvider, LlmError};
 
 use crate::{OpenAiConfig, OpenAiProvider};
 
@@ -11,7 +11,7 @@ use crate::{OpenAiConfig, OpenAiProvider};
 /// provider instantiation:
 ///
 /// ```rust,no_run
-/// use llm_stack_core::ProviderRegistry;
+/// use llm_stack::ProviderRegistry;
 /// use llm_stack_openai::OpenAiFactory;
 ///
 /// ProviderRegistry::global().register(Box::new(OpenAiFactory));
@@ -74,7 +74,7 @@ impl ProviderFactory for OpenAiFactory {
 /// Call this once at application startup to enable config-driven
 /// `OpenAI` provider creation.
 pub fn register_global() {
-    llm_stack_core::ProviderRegistry::global().register(Box::new(OpenAiFactory));
+    llm_stack::ProviderRegistry::global().register(Box::new(OpenAiFactory));
 }
 
 #[cfg(test)]

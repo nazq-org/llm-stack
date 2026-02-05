@@ -45,11 +45,11 @@ use super::loop_stream::tool_loop_stream;
 ///
 /// ```rust,no_run
 /// use std::sync::Arc;
-/// use llm_stack_core::{ChatParams, ChatMessage, ToolLoopConfig, ToolRegistry, StreamEvent};
-/// use llm_stack_core::tool::tool_loop_channel;
+/// use llm_stack::{ChatParams, ChatMessage, ToolLoopConfig, ToolRegistry, StreamEvent};
+/// use llm_stack::tool::tool_loop_channel;
 ///
 /// async fn example(
-///     provider: Arc<dyn llm_stack_core::DynProvider>,
+///     provider: Arc<dyn llm_stack::DynProvider>,
 ///     registry: Arc<ToolRegistry<()>>,
 /// ) -> Result<(), Box<dyn std::error::Error>> {
 ///     let params = ChatParams {

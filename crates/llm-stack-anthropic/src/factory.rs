@@ -1,7 +1,7 @@
 //! Factory for building Anthropic providers from configuration.
 
-use llm_stack_core::registry::{ProviderConfig, ProviderFactory};
-use llm_stack_core::{DynProvider, LlmError};
+use llm_stack::registry::{ProviderConfig, ProviderFactory};
+use llm_stack::{DynProvider, LlmError};
 
 use crate::{AnthropicConfig, AnthropicProvider};
 
@@ -11,7 +11,7 @@ use crate::{AnthropicConfig, AnthropicProvider};
 /// provider instantiation:
 ///
 /// ```rust,no_run
-/// use llm_stack_core::ProviderRegistry;
+/// use llm_stack::ProviderRegistry;
 /// use llm_stack_anthropic::AnthropicFactory;
 ///
 /// ProviderRegistry::global().register(Box::new(AnthropicFactory));
@@ -79,7 +79,7 @@ impl ProviderFactory for AnthropicFactory {
 /// Call this once at application startup to enable config-driven
 /// Anthropic provider creation.
 pub fn register_global() {
-    llm_stack_core::ProviderRegistry::global().register(Box::new(AnthropicFactory));
+    llm_stack::ProviderRegistry::global().register(Box::new(AnthropicFactory));
 }
 
 #[cfg(test)]

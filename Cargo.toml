@@ -1,15 +1,15 @@
 [workspace]
 resolver = "2"
-members = ["crates/llm-stack-core", "crates/llm-stack-anthropic", "crates/llm-stack-openai", "crates/llm-stack-ollama"]
+members = ["crates/llm-stack", "crates/llm-stack-anthropic", "crates/llm-stack-openai", "crates/llm-stack-ollama"]
 
 [workspace.package]
 version = "0.1.1"
 edition = "2024"
 rust-version = "1.85.0"
 license = "Apache-2.0"
-repository = "https://github.com/nazq/llm-stack"
-homepage = "https://github.com/nazq/llm-stack"
-documentation = "https://docs.rs/llm-stack-core"
+repository = "https://github.com/nazq-org/llm-stack"
+homepage = "https://github.com/nazq-org/llm-stack"
+documentation = "https://docs.rs/llm-stack"
 readme = "README.md"
 keywords = ["llm", "ai", "anthropic", "openai", "ollama"]
 categories = ["api-bindings", "asynchronous"]

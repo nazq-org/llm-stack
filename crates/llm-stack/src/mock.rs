@@ -9,12 +9,12 @@
 //! # Usage
 //!
 //! ```rust,no_run
-//! use llm_stack_core::mock::{MockProvider, MockError};
-//! use llm_stack_core::{Provider, ChatParams, ChatResponse, ContentBlock, StopReason, Usage};
+//! use llm_stack::mock::{MockProvider, MockError};
+//! use llm_stack::{Provider, ChatParams, ChatResponse, ContentBlock, StopReason, Usage};
 //! use std::collections::{HashMap, HashSet};
 //!
 //! # async fn example() {
-//! let mock = MockProvider::new(llm_stack_core::ProviderMetadata {
+//! let mock = MockProvider::new(llm_stack::ProviderMetadata {
 //!     name: "test".into(),
 //!     model: "test-model".into(),
 //!     context_window: 4096,

@@ -40,8 +40,8 @@
 //! # Example
 //!
 //! ```rust,ignore
-//! use llm_stack_core::ToolRegistry;
-//! use llm_stack_core::intercept::{InterceptorStack, Retry, Timeout, ToolExec};
+//! use llm_stack::ToolRegistry;
+//! use llm_stack::intercept::{InterceptorStack, Retry, Timeout, ToolExec};
 //! use std::time::Duration;
 //!
 //! let registry: ToolRegistry<()> = ToolRegistry::new()
@@ -90,7 +90,7 @@ pub trait Interceptable: Send + Sync + 'static {
 /// # Implementing
 ///
 /// ```rust,ignore
-/// use llm_stack_core::intercept::{Interceptor, Interceptable, Next};
+/// use llm_stack::intercept::{Interceptor, Interceptable, Next};
 /// use std::future::Future;
 /// use std::pin::Pin;
 ///
@@ -226,7 +226,7 @@ where
 /// # Example
 ///
 /// ```rust,ignore
-/// use llm_stack_core::intercept::{InterceptorStack, Retry, ToolExec};
+/// use llm_stack::intercept::{InterceptorStack, Retry, ToolExec};
 ///
 /// let stack = InterceptorStack::<ToolExec<()>>::new()
 ///     .with(Retry::default());
@@ -527,7 +527,7 @@ pub mod interceptors {
     /// # Example
     ///
     /// ```rust,ignore
-    /// use llm_stack_core::intercept::{InterceptorStack, Retry, ToolExec};
+    /// use llm_stack::intercept::{InterceptorStack, Retry, ToolExec};
     /// use std::time::Duration;
     ///
     /// let stack = InterceptorStack::<ToolExec<()>>::new()
@@ -619,7 +619,7 @@ pub mod interceptors {
     /// # Example
     ///
     /// ```rust,ignore
-    /// use llm_stack_core::intercept::{InterceptorStack, Timeout, ToolExec};
+    /// use llm_stack::intercept::{InterceptorStack, Timeout, ToolExec};
     /// use std::time::Duration;
     ///
     /// let stack = InterceptorStack::<ToolExec<()>>::new()
@@ -687,7 +687,7 @@ pub mod interceptors {
     /// # Example
     ///
     /// ```rust,ignore
-    /// use llm_stack_core::intercept::{InterceptorStack, Logging, LogLevel, ToolExec};
+    /// use llm_stack::intercept::{InterceptorStack, Logging, LogLevel, ToolExec};
     ///
     /// let stack = InterceptorStack::<ToolExec<()>>::new()
     ///     .with(Logging::new(LogLevel::Debug));
@@ -817,7 +817,7 @@ pub mod tool_interceptors {
     /// # Example
     ///
     /// ```rust,ignore
-    /// use llm_stack_core::intercept::{InterceptorStack, ToolExec, Approval, ApprovalDecision};
+    /// use llm_stack::intercept::{InterceptorStack, ToolExec, Approval, ApprovalDecision};
     ///
     /// let stack = InterceptorStack::<ToolExec<()>>::new()
     ///     .with(Approval::new(|req| {

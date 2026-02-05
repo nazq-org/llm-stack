@@ -5,7 +5,7 @@ Tools let LLMs call functions you define. The model decides when to use a tool, 
 ## Quick example
 
 ```rust
-use llm_stack_core::{
+use llm_stack::{
     ChatMessage, ChatParams, ToolDefinition, JsonSchema,
     tool_fn, ToolRegistry, tool_loop, ToolLoopConfig,
 };
@@ -68,7 +68,7 @@ The `tool_loop` function handles this entire conversation automatically.
 Tools have a name, description, JSON Schema for arguments, and optional retry config:
 
 ```rust
-use llm_stack_core::{ToolDefinition, JsonSchema};
+use llm_stack::{ToolDefinition, JsonSchema};
 use serde_json::json;
 
 let calculator = ToolDefinition {
@@ -99,7 +99,7 @@ There are two ways to create tool handlers: the `tool_fn` helper or implementing
 The simplest way to create a tool:
 
 ```rust
-use llm_stack_core::{tool_fn, ToolDefinition, JsonSchema};
+use llm_stack::{tool_fn, ToolDefinition, JsonSchema};
 use serde_json::json;
 
 let handler = tool_fn(
@@ -125,7 +125,7 @@ let handler = tool_fn(
 When tools need access to shared state (database connections, user identity, etc.):
 
 ```rust
-use llm_stack_core::{tool_fn_with_ctx, ToolDefinition, JsonSchema, ToolOutput, ToolRegistry, tool_loop, ToolLoopConfig, ChatParams, ChatMessage};
+use llm_stack::{tool_fn_with_ctx, ToolDefinition, JsonSchema, ToolOutput, ToolRegistry, tool_loop, ToolLoopConfig, ChatParams, ChatMessage};
 use serde_json::{json, Value};
 
 struct AppContext {
@@ -183,7 +183,7 @@ let result = tool_loop(provider, &registry, params, ToolLoopConfig::default(), &
 For more control, implement the trait:
 
 ```rust
-use llm_stack_core::{ToolHandler, ToolError, ToolOutput, ToolDefinition, JsonSchema};
+use llm_stack::{ToolHandler, ToolError, ToolOutput, ToolDefinition, JsonSchema};
 use serde_json::{json, Value};
 use std::future::Future;
 use std::pin::Pin;
@@ -224,7 +224,7 @@ impl ToolHandler<()> for Calculator {
 `ToolRegistry<Ctx>` manages tools and their handlers:
 
 ```rust
-use llm_stack_core::ToolRegistry;
+use llm_stack::ToolRegistry;
 
 // Registry with no context
 let mut registry: ToolRegistry<()> = ToolRegistry::new();
@@ -252,7 +252,7 @@ With the `schema` feature enabled, the registry validates arguments against the 
 Control how the tool loop behaves:
 
 ```rust
-use llm_stack_core::ToolLoopConfig;
+use llm_stack::ToolLoopConfig;
 use std::time::Duration;
 
 let config = ToolLoopConfig {
@@ -321,7 +321,7 @@ Set to `false` to execute tools sequentially.
 Require approval before executing tools:
 
 ```rust
-use llm_stack_core::ToolApproval;
+use llm_stack::ToolApproval;
 use std::sync::Arc;
 
 let config = ToolLoopConfig {
@@ -347,7 +347,7 @@ ToolApproval::Modify(json!({"sanitized": true}))
 Detect when an agent is stuck calling the same tool repeatedly:
 
 ```rust
-use llm_stack_core::{LoopDetectionConfig, LoopAction};
+use llm_stack::{LoopDetectionConfig, LoopAction};
 
 let config = ToolLoopConfig {
     loop_detection: Some(LoopDetectionConfig {
@@ -368,7 +368,7 @@ Actions:
 Stop the loop based on custom logic:
 
 ```rust
-use llm_stack_core::{StopDecision, StopContext};
+use llm_stack::{StopDecision, StopContext};
 use std::sync::Arc;
 
 let config = ToolLoopConfig {
@@ -393,7 +393,7 @@ let config = ToolLoopConfig {
 Get real-time events during tool loop execution:
 
 ```rust
-use llm_stack_core::{ToolLoopConfig, ToolLoopEvent};
+use llm_stack::{ToolLoopConfig, ToolLoopEvent};
 use std::sync::Arc;
 
 fn log_event(event: &ToolLoopEvent) {
@@ -432,7 +432,7 @@ let config = ToolLoopConfig {
 For real-time output, use `tool_loop_stream`:
 
 ```rust
-use llm_stack_core::tool_loop_stream;
+use llm_stack::tool_loop_stream;
 use futures::StreamExt;
 use std::sync::Arc;
 
@@ -458,7 +458,7 @@ while let Some(event) = stream.next().await {
 For slow consumers, use `tool_loop_channel` to prevent unbounded memory growth:
 
 ```rust
-use llm_stack_core::tool_loop_channel;
+use llm_stack::tool_loop_channel;
 
 let (mut rx, handle) = tool_loop_channel(
     provider,
@@ -518,7 +518,7 @@ match result.termination_reason {
 Configure automatic retries for unreliable tools (HTTP calls, flaky APIs):
 
 ```rust
-use llm_stack_core::{ToolDefinition, ToolRetryConfig, JsonSchema};
+use llm_stack::{ToolDefinition, ToolRetryConfig, JsonSchema};
 use std::time::Duration;
 use std::sync::Arc;
 
@@ -549,7 +549,7 @@ Defaults: 3 retries, 100ms initial backoff, 5s max, 2x multiplier, 0.5 jitter.
 Tool execution errors are returned to the model, which can retry or explain the failure:
 
 ```rust
-use llm_stack_core::ToolError;
+use llm_stack::ToolError;
 
 // In your handler
 Err(ToolError::new("Database connection failed"))
@@ -563,10 +563,10 @@ MCP servers expose tools over a standard protocol. Register MCP tools alongside 
 
 ### The design
 
-llm-stack-core defines a minimal trait — you implement it for your MCP client:
+llm-stack defines a minimal trait — you implement it for your MCP client:
 
 ```rust
-use llm_stack_core::{McpService, McpError, ToolDefinition};
+use llm_stack::{McpService, McpError, ToolDefinition};
 use std::pin::Pin;
 use std::future::Future;
 
@@ -576,7 +576,7 @@ pub trait McpService: Send + Sync {
 }
 ```
 
-This keeps llm-stack-core dependency-free. You choose your MCP client library and version.
+This keeps llm-stack dependency-free. You choose your MCP client library and version.
 
 ### Registering MCP tools
 
@@ -584,7 +584,7 @@ Once you have an `McpService` implementation:
 
 ```rust
 use std::sync::Arc;
-use llm_stack_core::{ToolRegistry, McpRegistryExt};
+use llm_stack::{ToolRegistry, McpRegistryExt};
 
 let mcp_service = Arc::new(my_mcp_adapter);
 
@@ -607,7 +607,7 @@ Tools can call `tool_loop` internally, enabling Master/Worker patterns where one
 Implement `LoopDepth` on your context type to enable automatic depth tracking:
 
 ```rust
-use llm_stack_core::tool::LoopDepth;
+use llm_stack::tool::LoopDepth;
 
 #[derive(Clone)]
 struct AgentContext {

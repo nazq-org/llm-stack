@@ -25,9 +25,9 @@ git_release_draft = false
 
 # Per-crate changelog settings (in addition to root)
 [[package]]
-name = "llm-stack-core"
-changelog_path = "crates/llm-stack-core/CHANGELOG.md"
-changelog_include = ["llm-stack-core"]
+name = "llm-stack"
+changelog_path = "crates/llm-stack/CHANGELOG.md"
+changelog_include = ["llm-stack"]
 
 [[package]]
 name = "llm-stack-anthropic"
