@@ -29,10 +29,13 @@ pub struct Usage {
     /// Tokens produced by the model's response.
     pub output_tokens: u64,
     /// Tokens used for chain-of-thought reasoning, if applicable.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_tokens: Option<u64>,
     /// Tokens served from the provider's prompt cache (reducing cost).
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub cache_read_tokens: Option<u64>,
     /// Tokens written into the provider's prompt cache for future reuse.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub cache_write_tokens: Option<u64>,
 }
 
@@ -510,6 +513,41 @@ mod tests {
         let json = serde_json::to_string(&u).unwrap();
         let back: Usage = serde_json::from_str(&json).unwrap();
         assert_eq!(u, back);
+    }
+
+    #[test]
+    fn test_usage_skip_serializing_none_fields() {
+        let u = Usage {
+            input_tokens: 100,
+            output_tokens: 50,
+            reasoning_tokens: None,
+            cache_read_tokens: None,
+            cache_write_tokens: None,
+        };
+        let json = serde_json::to_string(&u).unwrap();
+        // None fields should not appear in JSON
+        assert!(!json.contains("reasoning_tokens"));
+        assert!(!json.contains("cache_read_tokens"));
+        assert!(!json.contains("cache_write_tokens"));
+        // Required fields should be present
+        assert!(json.contains("input_tokens"));
+        assert!(json.contains("output_tokens"));
+    }
+
+    #[test]
+    fn test_usage_serializes_some_fields() {
+        let u = Usage {
+            input_tokens: 100,
+            output_tokens: 50,
+            reasoning_tokens: Some(10),
+            cache_read_tokens: Some(20),
+            cache_write_tokens: Some(5),
+        };
+        let json = serde_json::to_string(&u).unwrap();
+        // All fields should appear when Some
+        assert!(json.contains("reasoning_tokens"));
+        assert!(json.contains("cache_read_tokens"));
+        assert!(json.contains("cache_write_tokens"));
     }
 
     #[test]
