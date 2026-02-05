@@ -410,7 +410,6 @@ async fn execute_with_retry<Ctx: Send + Sync + 'static>(
     config: &ToolRetryConfig,
 ) -> ToolResponse {
     let mut attempt = 0u32;
-    let mut last_error_msg = String::new();
 
     loop {
         match handler.execute(request.arguments.clone(), ctx).await {
@@ -421,17 +420,17 @@ async fn execute_with_retry<Ctx: Send + Sync + 'static>(
                 };
             }
             Err(e) => {
-                last_error_msg = e.message;
+                let error_msg = e.message;
 
                 // Check if we should retry this error
                 let should_retry = config
                     .retry_if
                     .as_ref()
-                    .is_none_or(|predicate| predicate(&last_error_msg));
+                    .is_none_or(|predicate| predicate(&error_msg));
 
                 if !should_retry || attempt >= config.max_retries {
                     return ToolResponse {
-                        content: last_error_msg,
+                        content: error_msg,
                         is_error: true,
                     };
                 }

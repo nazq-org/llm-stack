@@ -13,7 +13,7 @@ documentation = "https://docs.rs/llm-stack-core"
 readme = "README.md"
 keywords = ["llm", "ai", "anthropic", "openai", "ollama"]
 categories = ["api-bindings", "asynchronous"]
-authors = ["llm-stack contributors"]
+authors = ["nazq"]
 
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
