@@ -1,4 +1,4 @@
-//! # llm-core
+//! # llm-stack-core
 //!
 //! Provider-agnostic types and traits for interacting with large language models.
 //!
