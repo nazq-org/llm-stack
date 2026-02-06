@@ -43,6 +43,7 @@ impl ProviderFactory for OllamaFactory {
 
         let mut ollama_config = OllamaConfig {
             model: config.model.clone(),
+            client: config.client.clone(),
             ..Default::default()
         };
 
