@@ -75,6 +75,13 @@ pub struct ProviderConfig {
     /// Request timeout.
     pub timeout: Option<Duration>,
 
+    /// Shared HTTP client for connection pooling.
+    ///
+    /// When set, the provider will use this client instead of creating
+    /// its own. Useful when multiple providers should share a connection
+    /// pool (e.g., in multi-agent systems).
+    pub client: Option<reqwest::Client>,
+
     /// Provider-specific configuration options.
     ///
     /// Use this for options that don't fit the common fields above.
@@ -110,6 +117,13 @@ impl ProviderConfig {
     #[must_use]
     pub fn timeout(mut self, timeout: Duration) -> Self {
         self.timeout = Some(timeout);
+        self
+    }
+
+    /// Sets a shared HTTP client for connection pooling.
+    #[must_use]
+    pub fn client(mut self, client: reqwest::Client) -> Self {
+        self.client = Some(client);
         self
     }
 

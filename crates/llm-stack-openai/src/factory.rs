@@ -50,6 +50,7 @@ impl ProviderFactory for OpenAiFactory {
         let mut openai_config = OpenAiConfig {
             api_key,
             model: config.model.clone(),
+            client: config.client.clone(),
             ..Default::default()
         };
 

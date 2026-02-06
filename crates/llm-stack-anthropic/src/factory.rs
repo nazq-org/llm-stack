@@ -50,6 +50,7 @@ impl ProviderFactory for AnthropicFactory {
         let mut anthropic_config = AnthropicConfig {
             api_key,
             model: config.model.clone(),
+            client: config.client.clone(),
             ..Default::default()
         };
 
