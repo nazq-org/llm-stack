@@ -174,19 +174,29 @@ println!("Final answer: {}", result.response.text().unwrap_or_default());
 For orchestration patterns that need control between iterations (multi-agent, event injection, context compaction):
 
 ```rust
-use llm_stack::{ToolLoopHandle, LoopEvent, LoopCommand};
+use llm_stack::{ToolLoopHandle, TurnResult};
 
 let mut handle = ToolLoopHandle::new(
     &provider, &registry, params, ToolLoopConfig::default(), &(),
 );
 
 loop {
-    match handle.next_event().await {
-        LoopEvent::ToolsExecuted { results, .. } => {
-            // Inspect results, inject messages, or stop
-            handle.resume(LoopCommand::Continue);
+    match handle.next_turn().await {
+        TurnResult::Yielded(turn) => {
+            // Text and tool results are directly available
+            if let Some(text) = turn.assistant_text() {
+                println!("LLM said: {text}");
+            }
+            turn.continue_loop(); // or inject_and_continue(), stop()
         }
-        LoopEvent::Completed { .. } | LoopEvent::Error { .. } => break,
+        TurnResult::Completed(done) => {
+            println!("Done: {}", done.response.text().unwrap_or_default());
+            break;
+        }
+        TurnResult::Error(err) => {
+            eprintln!("Error: {}", err.error);
+            break;
+        }
     }
 }
 ```
