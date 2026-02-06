@@ -2481,7 +2481,8 @@ fn test_tool_retry_config_debug() {
 // Resumable Tool Loop Tests
 // ─────────────────────────────────────────────────────────────────────────────
 
-use super::loop_resumable::{LoopCommand, LoopEvent, ToolLoopHandle};
+use super::loop_resumable::{ToolLoopHandle, TurnResult};
+use crate::test_helpers::sample_tool_response_with_text;
 
 #[tokio::test]
 async fn test_resumable_no_tools_completes() {
@@ -2495,14 +2496,14 @@ async fn test_resumable_no_tools_completes() {
     };
 
     let mut handle = ToolLoopHandle::new(&mock, &registry, params, ToolLoopConfig::default(), &());
-    let event = handle.next_event().await;
+    let turn = handle.next_turn().await;
 
-    assert!(
-        matches!(&event, LoopEvent::Completed { termination_reason, .. }
-            if *termination_reason == TerminationReason::Complete)
-    );
-    if let LoopEvent::Completed { response, .. } = &event {
-        assert_eq!(response.text(), Some("Hello!"));
+    match turn {
+        TurnResult::Completed(done) => {
+            assert_eq!(done.termination_reason, TerminationReason::Complete);
+            assert_eq!(done.response.text(), Some("Hello!"));
+        }
+        _ => panic!("expected Completed"),
     }
     assert!(handle.is_finished());
 }
@@ -2530,41 +2531,27 @@ async fn test_resumable_one_tool_iteration() {
 
     let mut handle = ToolLoopHandle::new(&mock, &registry, params, ToolLoopConfig::default(), &());
 
-    // First event: tools executed
-    let event = handle.next_event().await;
-    assert!(matches!(
-        &event,
-        LoopEvent::ToolsExecuted { iteration: 1, .. }
-    ));
-    if let LoopEvent::ToolsExecuted {
-        results,
-        tool_calls,
-        ..
-    } = &event
-    {
-        assert_eq!(tool_calls.len(), 1);
-        assert_eq!(tool_calls[0].name, "add");
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].content, "5");
+    // First turn: tools executed
+    match handle.next_turn().await {
+        TurnResult::Yielded(turn) => {
+            assert_eq!(turn.iteration, 1);
+            assert_eq!(turn.tool_calls.len(), 1);
+            assert_eq!(turn.tool_calls[0].name, "add");
+            assert_eq!(turn.results.len(), 1);
+            assert_eq!(turn.results[0].content, "5");
+            turn.continue_loop();
+        }
+        _ => panic!("expected Yielded"),
     }
 
-    // Resume
-    handle.resume(LoopCommand::Continue);
-
-    // Second event: completion
-    let event = handle.next_event().await;
-    assert!(
-        matches!(&event, LoopEvent::Completed { termination_reason, .. }
-            if *termination_reason == TerminationReason::Complete)
-    );
-    if let LoopEvent::Completed {
-        response,
-        iterations,
-        ..
-    } = &event
-    {
-        assert_eq!(*iterations, 2);
-        assert_eq!(response.text(), Some("The answer is 5"));
+    // Second turn: completion
+    match handle.next_turn().await {
+        TurnResult::Completed(done) => {
+            assert_eq!(done.iterations, 2);
+            assert_eq!(done.termination_reason, TerminationReason::Complete);
+            assert_eq!(done.response.text(), Some("The answer is 5"));
+        }
+        _ => panic!("expected Completed"),
     }
 }
 
@@ -2591,16 +2578,15 @@ async fn test_resumable_inject_messages() {
 
     let mut handle = ToolLoopHandle::new(&mock, &registry, params, ToolLoopConfig::default(), &());
 
-    let event = handle.next_event().await;
-    assert!(matches!(&event, LoopEvent::ToolsExecuted { .. }));
+    match handle.next_turn().await {
+        TurnResult::Yielded(turn) => {
+            // Inject a message before next iteration
+            turn.inject_and_continue(vec![ChatMessage::system("Additional context from worker")]);
+        }
+        _ => panic!("expected Yielded"),
+    }
 
-    // Inject a message before next iteration
-    handle.resume(LoopCommand::InjectMessages(vec![ChatMessage::system(
-        "Additional context from worker",
-    )]));
-
-    let event = handle.next_event().await;
-    assert!(matches!(&event, LoopEvent::Completed { .. }));
+    assert!(matches!(handle.next_turn().await, TurnResult::Completed(_)));
 
     // Verify the injected message was in the LLM call
     let recorded = mock.recorded_calls();
@@ -2640,19 +2626,24 @@ async fn test_resumable_stop_command() {
 
     let mut handle = ToolLoopHandle::new(&mock, &registry, params, ToolLoopConfig::default(), &());
 
-    let event = handle.next_event().await;
-    assert!(matches!(&event, LoopEvent::ToolsExecuted { .. }));
+    match handle.next_turn().await {
+        TurnResult::Yielded(turn) => {
+            turn.stop(Some("task_spawn detected".into()));
+        }
+        _ => panic!("expected Yielded"),
+    }
 
-    // Stop the loop
-    handle.resume(LoopCommand::Stop(Some("task_spawn detected".into())));
-
-    let event = handle.next_event().await;
-    assert!(
-        matches!(&event, LoopEvent::Completed { termination_reason, .. }
-        if matches!(termination_reason,
-            TerminationReason::StopCondition { reason: Some(r) } if r == "task_spawn detected"
-        ))
-    );
+    match handle.next_turn().await {
+        TurnResult::Completed(done) => {
+            assert!(matches!(
+                done.termination_reason,
+                TerminationReason::StopCondition {
+                    reason: Some(ref r)
+                } if r == "task_spawn detected"
+            ));
+        }
+        _ => panic!("expected Completed"),
+    }
 
     // Only 1 LLM call was made (the second was never reached)
     assert_eq!(mock.recorded_calls().len(), 1);
@@ -2686,25 +2677,30 @@ async fn test_resumable_usage_accumulation() {
     let mut handle = ToolLoopHandle::new(&mock, &registry, params, ToolLoopConfig::default(), &());
 
     // First iteration
-    let event = handle.next_event().await;
-    if let LoopEvent::ToolsExecuted { total_usage, .. } = &event {
-        assert_eq!(total_usage.input_tokens, 100); // 1 LLM call
+    match handle.next_turn().await {
+        TurnResult::Yielded(turn) => {
+            assert_eq!(turn.total_usage.input_tokens, 100);
+            turn.continue_loop();
+        }
+        _ => panic!("expected Yielded"),
     }
-    handle.resume(LoopCommand::Continue);
 
     // Second iteration
-    let event = handle.next_event().await;
-    if let LoopEvent::ToolsExecuted { total_usage, .. } = &event {
-        assert_eq!(total_usage.input_tokens, 200); // 2 LLM calls
+    match handle.next_turn().await {
+        TurnResult::Yielded(turn) => {
+            assert_eq!(turn.total_usage.input_tokens, 200);
+            turn.continue_loop();
+        }
+        _ => panic!("expected Yielded"),
     }
-    handle.resume(LoopCommand::Continue);
 
     // Completion
-    let event = handle.next_event().await;
-    if let LoopEvent::Completed { total_usage, .. } = &event {
-        // 3 LLM calls * 100 input tokens each
-        assert_eq!(total_usage.input_tokens, 300);
-        assert_eq!(total_usage.output_tokens, 150);
+    match handle.next_turn().await {
+        TurnResult::Completed(done) => {
+            assert_eq!(done.total_usage.input_tokens, 300);
+            assert_eq!(done.total_usage.output_tokens, 150);
+        }
+        _ => panic!("expected Completed"),
     }
 
     let result = handle.into_result();
@@ -2739,27 +2735,33 @@ async fn test_resumable_max_iterations() {
     let mut handle = ToolLoopHandle::new(&mock, &registry, params, config, &());
 
     // First iteration: tools executed
-    let event = handle.next_event().await;
-    assert!(matches!(
-        &event,
-        LoopEvent::ToolsExecuted { iteration: 1, .. }
-    ));
-    handle.resume(LoopCommand::Continue);
+    match handle.next_turn().await {
+        TurnResult::Yielded(turn) => {
+            assert_eq!(turn.iteration, 1);
+            turn.continue_loop();
+        }
+        _ => panic!("expected Yielded"),
+    }
 
     // Second iteration: tools executed
-    let event = handle.next_event().await;
-    assert!(matches!(
-        &event,
-        LoopEvent::ToolsExecuted { iteration: 2, .. }
-    ));
-    handle.resume(LoopCommand::Continue);
+    match handle.next_turn().await {
+        TurnResult::Yielded(turn) => {
+            assert_eq!(turn.iteration, 2);
+            turn.continue_loop();
+        }
+        _ => panic!("expected Yielded"),
+    }
 
     // Third: max iterations exceeded
-    let event = handle.next_event().await;
-    assert!(
-        matches!(&event, LoopEvent::Completed { termination_reason, .. }
-            if matches!(termination_reason, TerminationReason::MaxIterations { limit: 2 }))
-    );
+    match handle.next_turn().await {
+        TurnResult::Completed(done) => {
+            assert!(matches!(
+                done.termination_reason,
+                TerminationReason::MaxIterations { limit: 2 }
+            ));
+        }
+        _ => panic!("expected Completed"),
+    }
 }
 
 #[tokio::test]
@@ -2791,17 +2793,18 @@ async fn test_resumable_depth_exceeded() {
     let ctx = DepthCtx(1); // Already at depth 1, max is 1
     let mut handle = ToolLoopHandle::new(&mock, &registry_typed, params, config, &ctx);
 
-    let event = handle.next_event().await;
-    assert!(matches!(
-        &event,
-        LoopEvent::Error {
-            error: crate::LlmError::MaxDepthExceeded {
-                current: 1,
-                limit: 1
-            },
-            ..
+    match handle.next_turn().await {
+        TurnResult::Error(err) => {
+            assert!(matches!(
+                err.error,
+                crate::LlmError::MaxDepthExceeded {
+                    current: 1,
+                    limit: 1
+                }
+            ));
         }
-    ));
+        _ => panic!("expected Error"),
+    }
     assert!(handle.is_finished());
 }
 
@@ -2829,17 +2832,21 @@ async fn test_resumable_messages_access() {
     // Before any iteration: just the user message
     assert_eq!(handle.messages().len(), 1);
 
-    let event = handle.next_event().await;
-    assert!(matches!(&event, LoopEvent::ToolsExecuted { .. }));
+    match handle.next_turn().await {
+        TurnResult::Yielded(turn) => {
+            // Access messages through Yielded
+            assert_eq!(turn.messages().len(), 3); // user + assistant + tool_result
+            turn.continue_loop();
+        }
+        _ => panic!("expected Yielded"),
+    }
 
-    // After tool execution: user + assistant (with tool call) + tool result
+    // After tool execution: same messages visible on handle
     assert_eq!(handle.messages().len(), 3);
 
-    handle.resume(LoopCommand::Continue);
-    let _ = handle.next_event().await;
+    let _ = handle.next_turn().await;
 
-    // After completion: messages unchanged (no new tool calls)
-    // User + assistant(tool_call) + tool_result + assistant(text) = depends on impl
+    // After completion: messages include final assistant text
     assert!(handle.messages().len() >= 3);
 }
 
@@ -2855,7 +2862,7 @@ async fn test_resumable_into_result() {
     };
 
     let mut handle = ToolLoopHandle::new(&mock, &registry, params, ToolLoopConfig::default(), &());
-    let _ = handle.next_event().await;
+    let _ = handle.next_turn().await;
 
     let result = handle.into_result();
     assert_eq!(result.termination_reason, TerminationReason::Complete);
@@ -2877,12 +2884,10 @@ async fn test_resumable_repeated_next_after_completion() {
     let mut handle = ToolLoopHandle::new(&mock, &registry, params, ToolLoopConfig::default(), &());
 
     // First call: completion
-    let event = handle.next_event().await;
-    assert!(matches!(&event, LoopEvent::Completed { .. }));
+    assert!(matches!(handle.next_turn().await, TurnResult::Completed(_)));
 
-    // Second call: same terminal event
-    let event = handle.next_event().await;
-    assert!(matches!(&event, LoopEvent::Completed { .. }));
+    // Second call: same terminal result
+    assert!(matches!(handle.next_turn().await, TurnResult::Completed(_)));
 }
 
 #[tokio::test]
@@ -2910,13 +2915,17 @@ async fn test_resumable_stop_condition_callback() {
     };
 
     let mut handle = ToolLoopHandle::new(&mock, &registry, params, config, &());
-    let event = handle.next_event().await;
 
     // Should stop without executing tools
-    assert!(
-        matches!(&event, LoopEvent::Completed { termination_reason, .. }
-            if matches!(termination_reason, TerminationReason::StopCondition { reason: None }))
-    );
+    match handle.next_turn().await {
+        TurnResult::Completed(done) => {
+            assert!(matches!(
+                done.termination_reason,
+                TerminationReason::StopCondition { reason: None }
+            ));
+        }
+        _ => panic!("expected Completed"),
+    }
 }
 
 #[tokio::test]
@@ -2933,11 +2942,12 @@ async fn test_resumable_convenience_function() {
     };
 
     let mut handle = tool_loop_resumable(&mock, &registry, params, ToolLoopConfig::default(), &());
-    let event = handle.next_event().await;
 
-    assert!(matches!(&event, LoopEvent::Completed { .. }));
-    if let LoopEvent::Completed { response, .. } = &event {
-        assert_eq!(response.text(), Some("Via convenience"));
+    match handle.next_turn().await {
+        TurnResult::Completed(done) => {
+            assert_eq!(done.response.text(), Some("Via convenience"));
+        }
+        _ => panic!("expected Completed"),
     }
 }
 
@@ -2957,6 +2967,89 @@ async fn test_resumable_debug_impl() {
     assert!(debug.contains("ToolLoopHandle"));
     assert!(debug.contains("iterations"));
     assert!(debug.contains("finished"));
+}
+
+#[tokio::test]
+async fn test_resumable_assistant_content_exposed() {
+    let mock = mock_for("test", "test-model");
+
+    // LLM says "I'll help with that" alongside requesting a tool call
+    mock.queue_response(sample_tool_response_with_text(
+        "I'll help with that",
+        vec![ToolCall {
+            id: "c1".into(),
+            name: "add".into(),
+            arguments: json!({"a": 5, "b": 10}),
+        }],
+    ));
+    mock.queue_response(sample_response("The answer is 15"));
+
+    let mut registry: ToolRegistry<()> = ToolRegistry::new();
+    registry.register(AddTool);
+
+    let params = ChatParams {
+        messages: vec![ChatMessage::user("What is 5 + 10?")],
+        ..Default::default()
+    };
+
+    let mut handle = ToolLoopHandle::new(&mock, &registry, params, ToolLoopConfig::default(), &());
+
+    match handle.next_turn().await {
+        TurnResult::Yielded(turn) => {
+            // assistant_content should contain the text block
+            assert_eq!(turn.assistant_content.len(), 1);
+            assert!(
+                matches!(&turn.assistant_content[0], ContentBlock::Text(t) if t == "I'll help with that")
+            );
+
+            // assistant_text() helper should extract it
+            assert_eq!(turn.assistant_text(), Some("I'll help with that".into()));
+
+            turn.continue_loop();
+        }
+        _ => panic!("expected Yielded"),
+    }
+
+    match handle.next_turn().await {
+        TurnResult::Completed(done) => {
+            assert_eq!(done.response.text(), Some("The answer is 15"));
+        }
+        _ => panic!("expected Completed"),
+    }
+}
+
+#[tokio::test]
+async fn test_resumable_assistant_content_empty_when_no_text() {
+    let mock = mock_for("test", "test-model");
+
+    // LLM requests tool with no accompanying text
+    mock.queue_response(sample_tool_response(vec![ToolCall {
+        id: "c1".into(),
+        name: "add".into(),
+        arguments: json!({"a": 1, "b": 2}),
+    }]));
+    mock.queue_response(sample_response("Done"));
+
+    let mut registry: ToolRegistry<()> = ToolRegistry::new();
+    registry.register(AddTool);
+
+    let params = ChatParams {
+        messages: vec![ChatMessage::user("Go")],
+        ..Default::default()
+    };
+
+    let mut handle = ToolLoopHandle::new(&mock, &registry, params, ToolLoopConfig::default(), &());
+
+    match handle.next_turn().await {
+        TurnResult::Yielded(turn) => {
+            assert!(turn.assistant_content.is_empty());
+            assert!(turn.assistant_text().is_none());
+            turn.continue_loop();
+        }
+        _ => panic!("expected Yielded"),
+    }
+
+    let _ = handle.next_turn().await;
 }
 
 #[tokio::test]
@@ -2989,26 +3082,30 @@ async fn test_resumable_multi_iteration_with_mixed_commands() {
     let mut handle = ToolLoopHandle::new(&mock, &registry, params, ToolLoopConfig::default(), &());
 
     // Iteration 1: Continue
-    let event = handle.next_event().await;
-    assert!(matches!(
-        &event,
-        LoopEvent::ToolsExecuted { iteration: 1, .. }
-    ));
-    handle.resume(LoopCommand::Continue);
+    match handle.next_turn().await {
+        TurnResult::Yielded(turn) => {
+            assert_eq!(turn.iteration, 1);
+            turn.continue_loop();
+        }
+        _ => panic!("expected Yielded"),
+    }
 
     // Iteration 2: Inject messages
-    let event = handle.next_event().await;
-    assert!(matches!(
-        &event,
-        LoopEvent::ToolsExecuted { iteration: 2, .. }
-    ));
-    handle.resume(LoopCommand::InjectMessages(vec![ChatMessage::user(
-        "Worker completed task X",
-    )]));
+    match handle.next_turn().await {
+        TurnResult::Yielded(turn) => {
+            assert_eq!(turn.iteration, 2);
+            turn.inject_and_continue(vec![ChatMessage::user("Worker completed task X")]);
+        }
+        _ => panic!("expected Yielded"),
+    }
 
     // Iteration 3: Completion
-    let event = handle.next_event().await;
-    assert!(matches!(&event, LoopEvent::Completed { iterations: 3, .. }));
+    match handle.next_turn().await {
+        TurnResult::Completed(done) => {
+            assert_eq!(done.iterations, 3);
+        }
+        _ => panic!("expected Completed"),
+    }
 
     // Verify the injection was in the final LLM call
     let recorded = mock.recorded_calls();
@@ -3043,7 +3140,7 @@ async fn test_resumable_timeout() {
         ..Default::default()
     };
 
-    // Zero timeout: should trigger on second iteration
+    // Zero timeout: should trigger on first iteration
     let config = ToolLoopConfig {
         timeout: Some(Duration::ZERO),
         ..Default::default()
@@ -3051,14 +3148,16 @@ async fn test_resumable_timeout() {
 
     let mut handle = ToolLoopHandle::new(&mock, &registry, params, config, &());
 
-    // First event might be tools executed or timeout depending on timing.
-    // With Duration::ZERO, the timeout check happens at the start of the
-    // first iteration, but Instant::now() was set in new() so elapsed > 0.
-    let event = handle.next_event().await;
-    assert!(
-        matches!(&event, LoopEvent::Completed { termination_reason, .. }
-            if matches!(termination_reason, TerminationReason::Timeout { .. }))
-    );
+    // With Duration::ZERO, the timeout check fires immediately
+    match handle.next_turn().await {
+        TurnResult::Completed(done) => {
+            assert!(matches!(
+                done.termination_reason,
+                TerminationReason::Timeout { .. }
+            ));
+        }
+        _ => panic!("expected Completed with timeout"),
+    }
 }
 
 #[tokio::test]
@@ -3093,9 +3192,11 @@ async fn test_resumable_on_event_callback() {
 
     let mut handle = ToolLoopHandle::new(&mock, &registry, params, config, &());
 
-    let _ = handle.next_event().await;
-    handle.resume(LoopCommand::Continue);
-    let _ = handle.next_event().await;
+    match handle.next_turn().await {
+        TurnResult::Yielded(turn) => turn.continue_loop(),
+        _ => panic!("expected Yielded"),
+    }
+    let _ = handle.next_turn().await;
 
     let captured = events.lock().unwrap();
     assert!(

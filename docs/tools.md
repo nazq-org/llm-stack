@@ -492,7 +492,7 @@ The standard `tool_loop` runs to completion autonomously. For orchestration patt
 ```rust
 use llm_stack::{
     ChatMessage, ChatParams, ToolRegistry, ToolLoopConfig,
-    ToolLoopHandle, LoopEvent, LoopCommand,
+    ToolLoopHandle, TurnResult,
 };
 
 let registry: ToolRegistry<()> = ToolRegistry::new();
@@ -509,23 +509,29 @@ let mut handle = ToolLoopHandle::new(
 );
 
 loop {
-    match handle.next_event().await {
-        LoopEvent::ToolsExecuted { tool_calls, results, iteration, .. } => {
-            println!("Iteration {iteration}: {} tools executed", tool_calls.len());
+    match handle.next_turn().await {
+        TurnResult::Yielded(turn) => {
+            println!("Iteration {}: {} tools executed",
+                turn.iteration, turn.tool_calls.len());
+
+            // Text the LLM produced alongside tool calls is directly available
+            if let Some(text) = turn.assistant_text() {
+                println!("LLM said: {text}");
+            }
 
             // Inspect results and decide what to do
-            if results.iter().any(|r| r.content.contains("DONE")) {
-                handle.resume(LoopCommand::Stop(Some("Task complete".into())));
+            if turn.results.iter().any(|r| r.content.contains("DONE")) {
+                turn.stop(Some("Task complete".into()));
             } else {
-                handle.resume(LoopCommand::Continue);
+                turn.continue_loop();
             }
         }
-        LoopEvent::Completed { response, termination_reason, .. } => {
-            println!("Done: {termination_reason:?}");
+        TurnResult::Completed(done) => {
+            println!("Done: {:?}", done.termination_reason);
             break;
         }
-        LoopEvent::Error { error, .. } => {
-            eprintln!("Error: {error}");
+        TurnResult::Error(err) => {
+            eprintln!("Error: {}", err.error);
             break;
         }
     }
@@ -538,45 +544,60 @@ let result = handle.into_result();
 
 `ToolLoopHandle` is a direct state machine — no background tasks, no channels, no spawning. The caller drives it:
 
-1. **`next_event()`** — performs one iteration (LLM call + tool execution) and returns
-2. **`resume(command)`** — tells the loop what to do next
-3. Repeat until `Completed` or `Error`
+1. **`next_turn()`** — performs one iteration (LLM call + tool execution) and returns a `TurnResult`
+2. **Match on the result** — `Yielded` gives you tools, results, and text; `Completed` and `Error` are terminal
+3. **Consume `Yielded`** — call `.continue_loop()`, `.inject_and_continue(msgs)`, `.stop(reason)`, or `.resume(command)` to proceed
+4. Repeat until `Completed` or `Error`
 
-### Commands
+The `Yielded` variant borrows the handle mutably — you literally cannot call `next_turn()` again until you consume it. This prevents the common bug of forgetting to resume.
 
-| Command | Effect |
-|---------|--------|
-| `LoopCommand::Continue` | Proceed to next LLM iteration normally |
-| `LoopCommand::InjectMessages(msgs)` | Append messages before the next LLM call |
-| `LoopCommand::Stop(reason)` | Terminate with `TerminationReason::StopCondition` |
+### TurnResult variants
+
+| Variant | What happened | What to do |
+|---------|---------------|------------|
+| `Yielded(turn)` | Tools were executed | Consume via `continue_loop()`, `inject_and_continue()`, `stop()`, or `resume()` |
+| `Completed(done)` | Loop finished | Read `done.response`, `done.termination_reason` |
+| `Error(err)` | LLM call failed | Read `err.error` |
+
+### Yielded — the interesting one
+
+`Yielded` carries everything from the turn:
+
+- `turn.tool_calls` — what the LLM requested
+- `turn.results` — what the tools returned
+- `turn.assistant_content` — text/reasoning/images the LLM produced alongside tool calls
+- `turn.assistant_text()` — convenience to extract just the text
+- `turn.iteration` — which iteration this was
+- `turn.total_usage` — accumulated token usage
+- `turn.messages()` / `turn.messages_mut()` — full conversation history
 
 ### Injecting messages
 
 Add context between iterations — worker results, user follow-ups, system guidance:
 
 ```rust
-LoopEvent::ToolsExecuted { .. } => {
+TurnResult::Yielded(turn) => {
     let worker_result = run_worker_agent().await;
-    handle.resume(LoopCommand::InjectMessages(vec![
+    turn.inject_and_continue(vec![
         ChatMessage::user(format!("Worker completed: {worker_result}")),
-    ]));
+    ]);
 }
 ```
 
 ### Context compaction
 
-Access and modify the conversation history directly for token budget management:
+Access and modify the conversation history through the `Yielded` handle:
 
 ```rust
-LoopEvent::ToolsExecuted { .. } => {
-    let messages = handle.messages_mut();
+TurnResult::Yielded(mut turn) => {
+    let messages = turn.messages_mut();
     if messages.len() > 50 {
         // Summarize and compact old messages
         let summary = summarize(&messages[..messages.len() - 10]).await;
         messages.drain(1..messages.len() - 10);
         messages.insert(1, ChatMessage::user(summary));
     }
-    handle.resume(LoopCommand::Continue);
+    turn.continue_loop();
 }
 ```
 

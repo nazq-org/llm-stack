@@ -13,7 +13,7 @@
 //! # Example
 //!
 //! ```rust,no_run
-//! use llm_stack::tool::{ToolLoopConfig, ToolRegistry, ToolLoopHandle, LoopEvent, LoopCommand};
+//! use llm_stack::tool::{ToolLoopConfig, ToolRegistry, ToolLoopHandle, TurnResult, LoopCommand};
 //! use llm_stack::{ChatParams, ChatMessage};
 //!
 //! # async fn example(provider: &dyn llm_stack::DynProvider) -> Result<(), llm_stack::LlmError> {
@@ -32,24 +32,32 @@
 //! );
 //!
 //! loop {
-//!     match handle.next_event().await {
-//!         LoopEvent::ToolsExecuted { ref results, .. } => {
+//!     match handle.next_turn().await {
+//!         TurnResult::Yielded(turn) => {
+//!             // Text from this turn is directly available
+//!             if let Some(text) = turn.assistant_text() {
+//!                 println!("LLM said: {text}");
+//!             }
 //!             // Inspect results, decide what to do
-//!             handle.resume(LoopCommand::Continue);
+//!             turn.continue_loop();
 //!         }
-//!         LoopEvent::Completed { .. } => break,
-//!         LoopEvent::Error { .. } => break,
+//!         TurnResult::Completed(done) => {
+//!             println!("Done: {:?}", done.response.text());
+//!             break;
+//!         }
+//!         TurnResult::Error(err) => {
+//!             eprintln!("Error: {}", err.error);
+//!             break;
+//!         }
 //!     }
 //! }
-//!
-//! let result = handle.into_result();
 //! # Ok(())
 //! # }
 //! ```
 
 use std::time::Instant;
 
-use crate::chat::{ChatMessage, ChatResponse, StopReason, ToolCall, ToolResult};
+use crate::chat::{ChatMessage, ChatResponse, ContentBlock, StopReason, ToolCall, ToolResult};
 use crate::error::LlmError;
 use crate::provider::{ChatParams, DynProvider};
 use crate::usage::Usage;
@@ -64,58 +72,139 @@ use super::execution::execute_with_events;
 use super::loop_detection::{IterationSnapshot, LoopDetectionState, handle_loop_detection};
 use super::loop_sync::emit_event;
 
-/// Events yielded by the resumable tool loop to the caller.
+/// Result of one turn of the tool loop.
 ///
-/// After receiving a `ToolsExecuted` event, the caller must call
-/// [`ToolLoopHandle::resume()`] with a [`LoopCommand`] before calling
-/// [`next_event()`](ToolLoopHandle::next_event) again.
+/// Match on this to determine what happened and what you can do next.
+/// Each variant carries the data from the turn AND (for `Yielded`) a handle
+/// scoped to valid operations for that state.
 ///
-/// `Completed` and `Error` are terminal — calling `next_event()` after
-/// receiving either will return the same terminal event.
-#[derive(Debug)]
-pub enum LoopEvent {
-    /// Tools were executed and results are available.
+/// This follows the same pattern as [`std::collections::hash_map::Entry`] —
+/// the variant gives you exactly the methods that make sense for that state.
+#[must_use = "a TurnResult must be matched — Yielded requires resume() to continue"]
+pub enum TurnResult<'a, 'h, Ctx: LoopDepth + Send + Sync + 'static> {
+    /// Tools were executed. The caller MUST consume this via `resume()`,
+    /// `continue_loop()`, `inject_and_continue()`, or `stop()`.
     ///
-    /// The caller must call [`ToolLoopHandle::resume()`] to proceed.
-    ToolsExecuted {
-        /// The tool calls that the LLM requested.
-        tool_calls: Vec<ToolCall>,
-        /// Results from executing the tool calls.
-        results: Vec<ToolResult>,
-        /// Current iteration number (1-indexed).
-        iteration: u32,
-        /// Accumulated usage across all iterations so far.
-        total_usage: Usage,
-    },
+    /// While this variant exists, the `ToolLoopHandle` is mutably borrowed
+    /// and cannot be used directly. Consuming the `Yielded` releases the
+    /// borrow.
+    Yielded(Yielded<'a, 'h, Ctx>),
 
-    /// The loop completed (LLM returned without tool calls, or a stop
-    /// condition was met).
-    Completed {
-        /// The final LLM response.
-        response: ChatResponse,
-        /// Why the loop terminated.
-        termination_reason: TerminationReason,
-        /// Total iterations performed.
-        iterations: u32,
-        /// Accumulated usage across all iterations.
-        total_usage: Usage,
-    },
+    /// The loop completed (no tool calls, stop condition, max iterations, or timeout).
+    Completed(Completed),
 
-    /// An error occurred during the loop.
-    Error {
-        /// The error that occurred.
-        error: LlmError,
-        /// Iterations completed before the error.
-        iterations: u32,
-        /// Usage accumulated before the error.
-        total_usage: Usage,
-    },
+    /// An unrecoverable error occurred.
+    Error(TurnError),
+}
+
+/// Handle returned when tools were executed. Borrows the [`ToolLoopHandle`]
+/// mutably, so the caller cannot call `next_turn()` again until this is
+/// consumed via `resume()`, `continue_loop()`, `inject_and_continue()`, or
+/// `stop()`.
+///
+/// The text content the LLM produced alongside tool calls is available
+/// directly via [`assistant_content`](Self::assistant_content) and
+/// [`assistant_text()`](Self::assistant_text) — no need to scan
+/// `messages()`.
+#[must_use = "must call .resume(), .continue_loop(), .inject_and_continue(), or .stop() to continue"]
+pub struct Yielded<'a, 'h, Ctx: LoopDepth + Send + Sync + 'static> {
+    handle: &'h mut ToolLoopHandle<'a, Ctx>,
+
+    /// The tool calls the LLM requested.
+    pub tool_calls: Vec<ToolCall>,
+
+    /// Results from executing those tool calls.
+    pub results: Vec<ToolResult>,
+
+    /// Text content from the LLM's response alongside the tool calls.
+    ///
+    /// This is the `other_content` from `partition_content()` — `Text`,
+    /// `Reasoning`, `Image`, etc. — everything that isn't a `ToolCall` or
+    /// `ToolResult`. Previously only accessible by scanning `messages()`.
+    pub assistant_content: Vec<ContentBlock>,
+
+    /// Current iteration number (1-indexed).
+    pub iteration: u32,
+
+    /// Accumulated usage across all iterations so far.
+    pub total_usage: Usage,
+}
+
+impl<Ctx: LoopDepth + Send + Sync + 'static> Yielded<'_, '_, Ctx> {
+    /// Continue with the given command.
+    pub fn resume(self, command: LoopCommand) {
+        self.handle.resume(command);
+    }
+
+    /// Convenience: continue to the next LLM iteration with no injected messages.
+    pub fn continue_loop(self) {
+        self.resume(LoopCommand::Continue);
+    }
+
+    /// Convenience: inject messages and continue.
+    pub fn inject_and_continue(self, messages: Vec<ChatMessage>) {
+        self.resume(LoopCommand::InjectMessages(messages));
+    }
+
+    /// Convenience: stop the loop.
+    pub fn stop(self, reason: Option<String>) {
+        self.resume(LoopCommand::Stop(reason));
+    }
+
+    /// Extract text from `assistant_content` blocks.
+    ///
+    /// Returns the LLM's "thinking aloud" text emitted alongside tool calls,
+    /// or `None` if there were no text blocks.
+    pub fn assistant_text(&self) -> Option<String> {
+        let text: String = self
+            .assistant_content
+            .iter()
+            .filter_map(|block| match block {
+                ContentBlock::Text(t) => Some(t.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        if text.is_empty() { None } else { Some(text) }
+    }
+
+    /// Access the full message history (read-only).
+    pub fn messages(&self) -> &[ChatMessage] {
+        self.handle.messages()
+    }
+
+    /// Access the full message history (mutable, for context compaction).
+    pub fn messages_mut(&mut self) -> &mut Vec<ChatMessage> {
+        self.handle.messages_mut()
+    }
+}
+
+/// Terminal: the loop completed successfully.
+pub struct Completed {
+    /// The final LLM response. Use `.text()` to get the response text.
+    pub response: ChatResponse,
+    /// Why the loop terminated.
+    pub termination_reason: TerminationReason,
+    /// Total iterations performed.
+    pub iterations: u32,
+    /// Accumulated usage.
+    pub total_usage: Usage,
+}
+
+/// Terminal: the loop errored.
+pub struct TurnError {
+    /// The error.
+    pub error: LlmError,
+    /// Iterations completed before the error.
+    pub iterations: u32,
+    /// Usage accumulated before the error.
+    pub total_usage: Usage,
 }
 
 /// Commands sent by the caller to control the resumable loop.
 ///
-/// Passed to [`ToolLoopHandle::resume()`] after receiving a
-/// [`LoopEvent::ToolsExecuted`].
+/// Passed to [`Yielded::resume()`] after receiving a
+/// [`TurnResult::Yielded`].
 #[derive(Debug)]
 pub enum LoopCommand {
     /// Continue to the next LLM iteration normally.
@@ -134,24 +223,42 @@ pub enum LoopCommand {
     Stop(Option<String>),
 }
 
+// ── Internal: owned data from one iteration ──────────────────────────
+
+/// Intermediate result from `do_iteration`. Holds owned data (no borrows on
+/// the handle) so that `next_turn` can construct `TurnResult` with a fresh
+/// `&mut self` afterwards.
+enum IterationOutcome {
+    ToolsExecuted {
+        tool_calls: Vec<ToolCall>,
+        results: Vec<ToolResult>,
+        assistant_content: Vec<ContentBlock>,
+        iteration: u32,
+        total_usage: Usage,
+    },
+    Completed(Completed),
+    Error(TurnError),
+}
+
 /// Caller-driven resumable tool loop.
 ///
 /// Unlike [`tool_loop`](super::tool_loop) which runs autonomously, this struct
 /// gives the caller control between each tool execution round. Call
-/// [`next_event()`](Self::next_event) to advance the loop, inspect the result,
-/// then [`resume()`](Self::resume) to control what happens next.
+/// [`next_turn()`](Self::next_turn) to advance the loop, inspect the result,
+/// then consume the [`Yielded`] handle to control what happens next.
 ///
 /// # No spawning required
 ///
 /// This is a direct state machine — no background tasks, no channels. The
-/// caller drives it by calling `next_event()` which performs one iteration
+/// caller drives it by calling `next_turn()` which performs one iteration
 /// (LLM call + tool execution) and returns.
 ///
 /// # Lifecycle
 ///
 /// 1. Create with [`new()`](Self::new)
-/// 2. Call [`next_event()`](Self::next_event) to get the first event
-/// 3. If `ToolsExecuted`, call [`resume()`](Self::resume), then `next_event()` again
+/// 2. Call [`next_turn()`](Self::next_turn) to get the first result
+/// 3. If `Yielded`, consume via `resume()` / `continue_loop()` / etc., then
+///    call `next_turn()` again
 /// 4. Repeat until `Completed` or `Error`
 /// 5. Optionally call [`into_result()`](Self::into_result) for a `ToolLoopResult`
 pub struct ToolLoopHandle<'a, Ctx: LoopDepth + Send + Sync + 'static> {
@@ -173,21 +280,21 @@ pub struct ToolLoopHandle<'a, Ctx: LoopDepth + Send + Sync + 'static> {
     pending_command: Option<LoopCommand>,
     // Cached final result
     final_result: Option<ToolLoopResult>,
-    // Depth error to return on first next_event() call
+    // Depth error to return on first next_turn() call
     depth_error: Option<LlmError>,
 }
 
 impl<'a, Ctx: LoopDepth + Send + Sync + 'static> ToolLoopHandle<'a, Ctx> {
     /// Create a new resumable tool loop.
     ///
-    /// Does not start execution — call [`next_event()`](Self::next_event) to
+    /// Does not start execution — call [`next_turn()`](Self::next_turn) to
     /// begin the first iteration.
     ///
     /// # Depth Tracking
     ///
     /// Same as [`tool_loop`](super::tool_loop) — if `Ctx` implements [`LoopDepth`],
     /// nested calls are tracked and `max_depth` is enforced. If the depth limit
-    /// is already exceeded, the first call to `next_event()` returns `Error`.
+    /// is already exceeded, the first call to `next_turn()` returns `Error`.
     pub fn new(
         provider: &'a dyn DynProvider,
         registry: &'a ToolRegistry<Ctx>,
@@ -228,61 +335,52 @@ impl<'a, Ctx: LoopDepth + Send + Sync + 'static> ToolLoopHandle<'a, Ctx> {
         }
     }
 
-    /// Advance the loop and return the next event.
+    /// Advance the loop and return the result of this turn.
     ///
     /// Each call performs one iteration: LLM generation, tool execution (if
-    /// applicable), and returns the result. If the LLM doesn't request tools,
-    /// returns `Completed`. If tools are executed, returns `ToolsExecuted` and
-    /// waits for [`resume()`](Self::resume) before the next call.
+    /// applicable), and returns the result.
     ///
-    /// After returning `Completed` or `Error`, all subsequent calls return
-    /// the same terminal event.
-    pub async fn next_event(&mut self) -> LoopEvent {
-        // Phase 1: Pre-iteration guards
-        if let Some(event) = self.check_preconditions() {
-            return event;
+    /// Returns a [`TurnResult`] that must be matched:
+    /// - [`TurnResult::Yielded`] — tools ran, consume via `resume()` /
+    ///   `continue_loop()` / `inject_and_continue()` / `stop()` to continue
+    /// - [`TurnResult::Completed`] — loop is done, read `.response`
+    /// - [`TurnResult::Error`] — loop failed, read `.error`
+    ///
+    /// After `Completed` or `Error`, all subsequent calls return the same
+    /// terminal result.
+    pub async fn next_turn(&mut self) -> TurnResult<'a, '_, Ctx> {
+        let outcome = self.do_iteration().await;
+        match outcome {
+            IterationOutcome::ToolsExecuted {
+                tool_calls,
+                results,
+                assistant_content,
+                iteration,
+                total_usage,
+            } => TurnResult::Yielded(Yielded {
+                handle: self,
+                tool_calls,
+                results,
+                assistant_content,
+                iteration,
+                total_usage,
+            }),
+            IterationOutcome::Completed(c) => TurnResult::Completed(c),
+            IterationOutcome::Error(e) => TurnResult::Error(e),
         }
-
-        self.iterations += 1;
-
-        // Emit iteration start event
-        let msg_count = self.params.messages.len();
-        let iterations = self.iterations;
-        emit_event(&self.config, || ToolLoopEvent::IterationStart {
-            iteration: iterations,
-            message_count: msg_count,
-        });
-
-        // Phase 2: LLM call
-        let response = match self.provider.generate_boxed(&self.params).await {
-            Ok(r) => r,
-            Err(e) => return self.finish_error(e),
-        };
-        self.total_usage += &response.usage;
-
-        // Emit response received event
-        let call_refs: Vec<&ToolCall> = response.tool_calls();
-        let text_length = response.text().map_or(0, str::len);
-        let has_tool_calls = !call_refs.is_empty();
-        let iterations = self.iterations;
-        emit_event(&self.config, || ToolLoopEvent::LlmResponseReceived {
-            iteration: iterations,
-            has_tool_calls,
-            text_length,
-        });
-
-        // Phase 3: Termination checks
-        if let Some(event) = self.check_termination(&response, &call_refs) {
-            return event;
-        }
-
-        // Phase 4: Execute tools and yield
-        self.execute_and_yield(response).await
     }
 
-    /// Tell the loop how to proceed after a `ToolsExecuted` event.
+    /// Tell the loop how to proceed before the next [`next_turn()`](Self::next_turn) call.
     ///
-    /// Must be called before the next [`next_event()`](Self::next_event) call.
+    /// When using [`TurnResult::Yielded`], prefer the convenience methods on
+    /// [`Yielded`] (`continue_loop()`, `inject_and_continue()`, `stop()`),
+    /// which consume the yielded handle and call this internally.
+    ///
+    /// This method is useful when you need to set a command on the handle
+    /// directly — for example, when driving the handle from an external
+    /// event loop that receives the command asynchronously after the
+    /// `Yielded` has already been consumed.
+    ///
     /// Has no effect after `Completed` or `Error`.
     pub fn resume(&mut self, command: LoopCommand) {
         if !self.finished {
@@ -333,12 +431,59 @@ impl<'a, Ctx: LoopDepth + Send + Sync + 'static> ToolLoopHandle<'a, Ctx> {
         })
     }
 
+    // ── Core iteration logic ────────────────────────────────────────
+
+    /// Perform one iteration and return owned data. Does NOT borrow `&mut self`
+    /// beyond this call — the returned `IterationOutcome` is fully owned.
+    async fn do_iteration(&mut self) -> IterationOutcome {
+        // Phase 1: Pre-iteration guards
+        if let Some(outcome) = self.check_preconditions() {
+            return outcome;
+        }
+
+        self.iterations += 1;
+
+        // Emit iteration start event
+        let msg_count = self.params.messages.len();
+        let iterations = self.iterations;
+        emit_event(&self.config, || ToolLoopEvent::IterationStart {
+            iteration: iterations,
+            message_count: msg_count,
+        });
+
+        // Phase 2: LLM call
+        let response = match self.provider.generate_boxed(&self.params).await {
+            Ok(r) => r,
+            Err(e) => return self.finish_error(e),
+        };
+        self.total_usage += &response.usage;
+
+        // Emit response received event
+        let call_refs: Vec<&ToolCall> = response.tool_calls();
+        let text_length = response.text().map_or(0, str::len);
+        let has_tool_calls = !call_refs.is_empty();
+        let iterations = self.iterations;
+        emit_event(&self.config, || ToolLoopEvent::LlmResponseReceived {
+            iteration: iterations,
+            has_tool_calls,
+            text_length,
+        });
+
+        // Phase 3: Termination checks
+        if let Some(outcome) = self.check_termination(&response, &call_refs) {
+            return outcome;
+        }
+
+        // Phase 4: Execute tools and build outcome
+        self.execute_tools(response).await
+    }
+
     // ── Pre-iteration guards ────────────────────────────────────────
 
     /// Handle depth errors, already-finished state, pending commands, and timeout.
     ///
-    /// Returns `Some(event)` if the loop should not proceed to an LLM call.
-    fn check_preconditions(&mut self) -> Option<LoopEvent> {
+    /// Returns `Some(outcome)` if the loop should not proceed to an LLM call.
+    fn check_preconditions(&mut self) -> Option<IterationOutcome> {
         // Depth error deferred from new()
         if let Some(error) = self.depth_error.take() {
             return Some(self.finish_error(error));
@@ -346,7 +491,7 @@ impl<'a, Ctx: LoopDepth + Send + Sync + 'static> ToolLoopHandle<'a, Ctx> {
 
         // Already finished — return cached terminal event
         if self.finished {
-            return Some(self.make_terminal_event());
+            return Some(self.make_terminal_outcome());
         }
 
         // Apply pending command from previous resume() call
@@ -381,12 +526,12 @@ impl<'a, Ctx: LoopDepth + Send + Sync + 'static> ToolLoopHandle<'a, Ctx> {
 
     /// Check stop condition, natural completion, max iterations, and loop detection.
     ///
-    /// Returns `Some(event)` if the loop should terminate after this response.
+    /// Returns `Some(outcome)` if the loop should terminate after this response.
     fn check_termination(
         &mut self,
         response: &ChatResponse,
         call_refs: &[&ToolCall],
-    ) -> Option<LoopEvent> {
+    ) -> Option<IterationOutcome> {
         // Custom stop condition
         if let Some(ref stop_fn) = self.config.stop_when {
             let ctx = StopContext {
@@ -451,11 +596,11 @@ impl<'a, Ctx: LoopDepth + Send + Sync + 'static> ToolLoopHandle<'a, Ctx> {
 
     // ── Tool execution ──────────────────────────────────────────────
 
-    /// Extract tool calls, execute them, append results, and yield to caller.
-    async fn execute_and_yield(&mut self, response: ChatResponse) -> LoopEvent {
+    /// Extract tool calls, execute them, append results, and return owned outcome.
+    async fn execute_tools(&mut self, response: ChatResponse) -> IterationOutcome {
         let (calls, other_content) = response.partition_content();
 
-        // Clone calls for the event return; originals move into approval/execution
+        // Clone calls for the outcome return; originals move into approval/execution
         let event_calls = calls.clone();
         let (approved_calls, denied_results) = approve_calls(calls, &self.config);
         let results = execute_with_events(
@@ -471,10 +616,10 @@ impl<'a, Ctx: LoopDepth + Send + Sync + 'static> ToolLoopHandle<'a, Ctx> {
         self.tool_calls_executed += results.len();
         self.last_tool_results.clone_from(&results);
 
-        // Append assistant message with tool calls to conversation
+        // Append assistant message with non-tool content to conversation
         self.params.messages.push(ChatMessage {
             role: crate::chat::ChatRole::Assistant,
-            content: other_content,
+            content: other_content.clone(),
         });
 
         // Append tool results to conversation
@@ -484,22 +629,26 @@ impl<'a, Ctx: LoopDepth + Send + Sync + 'static> ToolLoopHandle<'a, Ctx> {
                 .push(ChatMessage::tool_result_full(result.clone()));
         }
 
-        LoopEvent::ToolsExecuted {
+        let iteration = self.iterations;
+        let total_usage = self.total_usage.clone();
+
+        IterationOutcome::ToolsExecuted {
             tool_calls: event_calls,
             results,
-            iteration: self.iterations,
-            total_usage: self.total_usage.clone(),
+            assistant_content: other_content,
+            iteration,
+            total_usage,
         }
     }
 
-    // ── Terminal event helpers ───────────────────────────────────────
+    // ── Terminal outcome helpers ─────────────────────────────────────
 
-    /// Mark the loop as finished and return a `Completed` event.
+    /// Mark the loop as finished and return a `Completed` outcome.
     fn finish(
         &mut self,
         response: ChatResponse,
         termination_reason: TerminationReason,
-    ) -> LoopEvent {
+    ) -> IterationOutcome {
         self.finished = true;
         self.final_result = Some(ToolLoopResult {
             response: response.clone(),
@@ -507,16 +656,16 @@ impl<'a, Ctx: LoopDepth + Send + Sync + 'static> ToolLoopHandle<'a, Ctx> {
             total_usage: self.total_usage.clone(),
             termination_reason: termination_reason.clone(),
         });
-        LoopEvent::Completed {
+        IterationOutcome::Completed(Completed {
             response,
             termination_reason,
             iterations: self.iterations,
             total_usage: self.total_usage.clone(),
-        }
+        })
     }
 
-    /// Mark the loop as finished and return an `Error` event.
-    fn finish_error(&mut self, error: LlmError) -> LoopEvent {
+    /// Mark the loop as finished and return an `Error` outcome.
+    fn finish_error(&mut self, error: LlmError) -> IterationOutcome {
         self.finished = true;
         self.final_result = Some(ToolLoopResult {
             response: ChatResponse::empty(),
@@ -524,29 +673,29 @@ impl<'a, Ctx: LoopDepth + Send + Sync + 'static> ToolLoopHandle<'a, Ctx> {
             total_usage: self.total_usage.clone(),
             termination_reason: TerminationReason::Complete,
         });
-        LoopEvent::Error {
+        IterationOutcome::Error(TurnError {
             error,
             iterations: self.iterations,
             total_usage: self.total_usage.clone(),
-        }
+        })
     }
 
-    /// Build a terminal event from cached state (for repeated calls after finish).
-    fn make_terminal_event(&self) -> LoopEvent {
+    /// Build a terminal outcome from cached state (for repeated calls after finish).
+    fn make_terminal_outcome(&self) -> IterationOutcome {
         if let Some(ref result) = self.final_result {
-            LoopEvent::Completed {
+            IterationOutcome::Completed(Completed {
                 response: result.response.clone(),
                 termination_reason: result.termination_reason.clone(),
                 iterations: result.iterations,
                 total_usage: result.total_usage.clone(),
-            }
+            })
         } else {
-            LoopEvent::Completed {
+            IterationOutcome::Completed(Completed {
                 response: ChatResponse::empty(),
                 termination_reason: TerminationReason::Complete,
                 iterations: self.iterations,
                 total_usage: self.total_usage.clone(),
-            }
+            })
         }
     }
 }
