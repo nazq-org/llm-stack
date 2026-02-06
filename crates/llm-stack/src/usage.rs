@@ -39,6 +39,21 @@ pub struct Usage {
     pub cache_write_tokens: Option<u64>,
 }
 
+impl Usage {
+    /// Total tokens across all categories.
+    ///
+    /// Sums `input_tokens`, `output_tokens`, and all optional fields
+    /// (`reasoning_tokens`, `cache_read_tokens`, `cache_write_tokens`),
+    /// treating `None` as zero. Uses saturating arithmetic.
+    pub fn total_tokens(&self) -> u64 {
+        self.input_tokens
+            .saturating_add(self.output_tokens)
+            .saturating_add(self.reasoning_tokens.unwrap_or(0))
+            .saturating_add(self.cache_read_tokens.unwrap_or(0))
+            .saturating_add(self.cache_write_tokens.unwrap_or(0))
+    }
+}
+
 /// Helper: adds two `Option<u64>` fields, treating `None` as zero.
 fn add_optional(a: Option<u64>, b: Option<u64>) -> Option<u64> {
     match (a, b) {
@@ -458,6 +473,35 @@ fn compute_token_cost(tokens: u64, per_million: u64) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_total_tokens_all_fields() {
+        let u = Usage {
+            input_tokens: 100,
+            output_tokens: 50,
+            reasoning_tokens: Some(30),
+            cache_read_tokens: Some(20),
+            cache_write_tokens: Some(10),
+        };
+        assert_eq!(u.total_tokens(), 210);
+    }
+
+    #[test]
+    fn test_total_tokens_none_fields() {
+        let u = Usage {
+            input_tokens: 100,
+            output_tokens: 50,
+            reasoning_tokens: None,
+            cache_read_tokens: None,
+            cache_write_tokens: None,
+        };
+        assert_eq!(u.total_tokens(), 150);
+    }
+
+    #[test]
+    fn test_total_tokens_default() {
+        assert_eq!(Usage::default().total_tokens(), 0);
+    }
 
     #[test]
     fn test_usage_clone_eq() {
