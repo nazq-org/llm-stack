@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [0.3.0] - 2026-02-06
 
+### Bug Fixes
+
+- Update README resumable loop example and add Usage::total_tokens() ([#13](https://github.com/nazq-org/llm-stack/pull/13))
+
 ### Features
 
 - *(registry)* Add shared HTTP client to ProviderConfig ([#10](https://github.com/nazq-org/llm-stack/pull/10))
