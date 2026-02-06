@@ -106,6 +106,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | **Unified Provider Trait** | Two methods define a provider: `generate()` + `stream()` |
 | **Streaming** | First-class async streaming with `StreamEvent` types |
 | **Tool Execution** | Register handlers, validate inputs, execute in agentic loops |
+| **Resumable Tool Loop** | Caller-driven iteration with inspect/inject/stop between rounds |
 | **Structured Output** | `generate_object::<T>()` with JSON Schema validation |
 | **Interceptors** | Composable retry, timeout, logging, approval gates |
 | **Usage Tracking** | Token counts, cost calculation in microdollars |
@@ -167,6 +168,30 @@ let result = tool_loop(
 
 println!("Final answer: {}", result.response.text().unwrap_or_default());
 ```
+
+### Resumable Tool Loop
+
+For orchestration patterns that need control between iterations (multi-agent, event injection, context compaction):
+
+```rust
+use llm_stack::{ToolLoopHandle, LoopEvent, LoopCommand};
+
+let mut handle = ToolLoopHandle::new(
+    &provider, &registry, params, ToolLoopConfig::default(), &(),
+);
+
+loop {
+    match handle.next_event().await {
+        LoopEvent::ToolsExecuted { results, .. } => {
+            // Inspect results, inject messages, or stop
+            handle.resume(LoopCommand::Continue);
+        }
+        LoopEvent::Completed { .. } | LoopEvent::Error { .. } => break,
+    }
+}
+```
+
+See [Tool documentation](docs/tools.md#resumable-tool-loop) for the full API.
 
 ### Structured Output
 

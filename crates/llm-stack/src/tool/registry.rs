@@ -294,7 +294,8 @@ impl<Ctx: Send + Sync + 'static> ToolRegistry<Ctx> {
     /// Executes a tool by name with the given arguments.
     ///
     /// This is a lower-level method used internally when the tool call
-    /// components are already separated (e.g., for streaming execution).
+    /// components are already separated (e.g., from `execute_with_events`).
+    /// Accepts owned arguments to avoid an extra deep clone of `serde_json::Value`.
     pub(crate) async fn execute_by_name(
         &self,
         name: &str,
@@ -302,12 +303,47 @@ impl<Ctx: Send + Sync + 'static> ToolRegistry<Ctx> {
         arguments: serde_json::Value,
         ctx: &Ctx,
     ) -> ToolResult {
-        let call = ToolCall {
-            id: call_id.to_string(),
+        let Some(handler) = self.handlers.get(name) else {
+            return ToolResult {
+                tool_call_id: call_id.to_string(),
+                content: format!("Unknown tool: {name}"),
+                is_error: true,
+            };
+        };
+
+        // Validate arguments against schema
+        #[cfg(feature = "schema")]
+        {
+            let definition = handler.definition();
+            if let Err(e) = definition.parameters.validate(&arguments) {
+                return ToolResult {
+                    tool_call_id: call_id.to_string(),
+                    content: format!("Invalid arguments for tool '{name}': {e}"),
+                    is_error: true,
+                };
+            }
+        }
+
+        // Build ToolRequest directly — moves owned arguments, no deep clone
+        let request = ToolRequest {
             name: name.to_string(),
+            call_id: call_id.to_string(),
             arguments,
         };
-        self.execute(&call, ctx).await
+
+        let operation = ToolHandlerOperation {
+            handler: handler.clone(),
+            ctx,
+            retry_config: handler.definition().retry,
+        };
+
+        let response = self.interceptors.execute(&request, &operation).await;
+
+        ToolResult {
+            tool_call_id: request.call_id,
+            content: response.content,
+            is_error: response.is_error,
+        }
     }
 
     /// Executes multiple tool calls, preserving order.

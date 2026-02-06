@@ -31,12 +31,13 @@ fn emit_tool_end(
 
 /// Execute tool calls with start/end events.
 ///
-/// Uses streams for unified parallel/sequential execution:
+/// Accepts owned `Vec<ToolCall>` to avoid deep-cloning `serde_json::Value`
+/// arguments. Uses streams for unified parallel/sequential execution:
 /// - Parallel: `buffer_unordered` for concurrent execution
 /// - Sequential: `then` for ordered execution
 pub(crate) async fn execute_with_events<Ctx: Send + Sync + 'static>(
     registry: &ToolRegistry<Ctx>,
-    calls: &[ToolCall],
+    calls: Vec<ToolCall>,
     denied_results: Vec<ToolResult>,
     parallel: bool,
     config: &ToolLoopConfig,
@@ -46,14 +47,19 @@ pub(crate) async fn execute_with_events<Ctx: Send + Sync + 'static>(
         return denied_results;
     }
 
-    // Setup execution closure
-    let execute_one = |call: &ToolCall| {
-        let call_id = call.id.clone();
-        let tool_name = call.name.clone();
-        let arguments = call.arguments.clone();
+    let has_event_cb = config.on_event.is_some();
+    let call_count = calls.len();
+
+    // Setup execution closure — moves owned ToolCall, no deep-clone of arguments
+    let execute_one = |call: ToolCall| {
+        let ToolCall {
+            id: call_id,
+            name: tool_name,
+            arguments,
+        } = call;
         async move {
-            // Emit start event
-            if config.on_event.is_some() {
+            // Emit start event (only clone arguments when callback is set)
+            if has_event_cb {
                 emit_event(config, || ToolLoopEvent::ToolExecutionStart {
                     call_id: call_id.clone(),
                     tool_name: tool_name.clone(),
@@ -73,11 +79,11 @@ pub(crate) async fn execute_with_events<Ctx: Send + Sync + 'static>(
         }
     };
 
-    // Execute calls in parallel or sequentially, notice the call to .buffer_unordered for parallelism
-    let mut results: Vec<ToolResult> = if parallel && calls.len() > 1 {
+    // Execute calls in parallel or sequentially
+    let mut results: Vec<ToolResult> = if parallel && call_count > 1 {
         stream::iter(calls)
             .map(execute_one)
-            .buffer_unordered(calls.len())
+            .buffer_unordered(call_count)
             .collect()
             .await
     } else {

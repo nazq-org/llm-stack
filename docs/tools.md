@@ -485,6 +485,124 @@ while let Some(event) = rx.recv().await {
 let result = handle.await?;
 ```
 
+## Resumable tool loop
+
+The standard `tool_loop` runs to completion autonomously. For orchestration patterns where you need control between iterations — multi-agent systems, external event injection, context compaction — use `ToolLoopHandle`:
+
+```rust
+use llm_stack::{
+    ChatMessage, ChatParams, ToolRegistry, ToolLoopConfig,
+    ToolLoopHandle, LoopEvent, LoopCommand,
+};
+
+let registry: ToolRegistry<()> = ToolRegistry::new();
+// ... register tools ...
+
+let params = ChatParams {
+    messages: vec![ChatMessage::user("Analyze this dataset")],
+    tools: Some(registry.definitions()),
+    ..Default::default()
+};
+
+let mut handle = ToolLoopHandle::new(
+    provider, &registry, params, ToolLoopConfig::default(), &(),
+);
+
+loop {
+    match handle.next_event().await {
+        LoopEvent::ToolsExecuted { tool_calls, results, iteration, .. } => {
+            println!("Iteration {iteration}: {} tools executed", tool_calls.len());
+
+            // Inspect results and decide what to do
+            if results.iter().any(|r| r.content.contains("DONE")) {
+                handle.resume(LoopCommand::Stop(Some("Task complete".into())));
+            } else {
+                handle.resume(LoopCommand::Continue);
+            }
+        }
+        LoopEvent::Completed { response, termination_reason, .. } => {
+            println!("Done: {termination_reason:?}");
+            break;
+        }
+        LoopEvent::Error { error, .. } => {
+            eprintln!("Error: {error}");
+            break;
+        }
+    }
+}
+
+let result = handle.into_result();
+```
+
+### How it works
+
+`ToolLoopHandle` is a direct state machine — no background tasks, no channels, no spawning. The caller drives it:
+
+1. **`next_event()`** — performs one iteration (LLM call + tool execution) and returns
+2. **`resume(command)`** — tells the loop what to do next
+3. Repeat until `Completed` or `Error`
+
+### Commands
+
+| Command | Effect |
+|---------|--------|
+| `LoopCommand::Continue` | Proceed to next LLM iteration normally |
+| `LoopCommand::InjectMessages(msgs)` | Append messages before the next LLM call |
+| `LoopCommand::Stop(reason)` | Terminate with `TerminationReason::StopCondition` |
+
+### Injecting messages
+
+Add context between iterations — worker results, user follow-ups, system guidance:
+
+```rust
+LoopEvent::ToolsExecuted { .. } => {
+    let worker_result = run_worker_agent().await;
+    handle.resume(LoopCommand::InjectMessages(vec![
+        ChatMessage::user(format!("Worker completed: {worker_result}")),
+    ]));
+}
+```
+
+### Context compaction
+
+Access and modify the conversation history directly for token budget management:
+
+```rust
+LoopEvent::ToolsExecuted { .. } => {
+    let messages = handle.messages_mut();
+    if messages.len() > 50 {
+        // Summarize and compact old messages
+        let summary = summarize(&messages[..messages.len() - 10]).await;
+        messages.drain(1..messages.len() - 10);
+        messages.insert(1, ChatMessage::user(summary));
+    }
+    handle.resume(LoopCommand::Continue);
+}
+```
+
+### Inspecting state
+
+The handle exposes loop state between iterations:
+
+- `handle.messages()` — current conversation
+- `handle.messages_mut()` — mutable conversation access
+- `handle.total_usage()` — accumulated token usage
+- `handle.iterations()` — current iteration count
+- `handle.is_finished()` — whether a terminal event was returned
+- `handle.into_result()` — consume handle into a `ToolLoopResult`
+
+### Convenience constructor
+
+`tool_loop_resumable()` is an alias for `ToolLoopHandle::new()`:
+
+```rust
+use llm_stack::tool_loop_resumable;
+
+let mut handle = tool_loop_resumable(provider, &registry, params, config, &ctx);
+```
+
+All `ToolLoopConfig` options (max_iterations, timeout, stop_when, loop_detection, approval hooks, on_event) work identically to `tool_loop`.
+
 ## Tool results
 
 The `tool_loop` returns comprehensive results:

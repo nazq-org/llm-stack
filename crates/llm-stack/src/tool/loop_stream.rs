@@ -17,7 +17,7 @@ use super::ToolRegistry;
 use super::approval::approve_calls;
 use super::config::{StopContext, StopDecision, TerminationReason, ToolLoopConfig, ToolLoopEvent};
 use super::execution::execute_with_events;
-use super::loop_detection::{LoopDetectionState, handle_loop_detection};
+use super::loop_detection::{IterationSnapshot, LoopDetectionState, handle_loop_detection};
 use super::loop_sync::emit_event;
 
 /// Streaming variant of [`tool_loop`](super::tool_loop).
@@ -201,15 +201,20 @@ async fn phase_streaming<Ctx: LoopDepth + Send + Sync + 'static>(
                 if *stop_reason == StopReason::ToolUse && !state.current_tool_calls.is_empty() {
                     // Check for loop detection before executing tools
                     let response = build_response_from_stream_state(state, *stop_reason);
+                    let call_refs: Vec<&ToolCall> = state.current_tool_calls.iter().collect();
+                    let snap = IterationSnapshot {
+                        response: &response,
+                        call_refs: &call_refs,
+                        iterations: state.iterations,
+                        total_usage: &state.total_usage,
+                        tool_calls_executed: state.tool_calls_executed,
+                        last_tool_results: &state.last_tool_results,
+                        config: &state.config,
+                    };
                     if let Some(result) = handle_loop_detection(
                         &mut state.loop_state,
-                        &state.current_tool_calls,
-                        state.config.loop_detection.as_ref(),
-                        &state.config,
+                        &snap,
                         &mut state.params.messages,
-                        &response,
-                        state.iterations,
-                        &state.total_usage,
                     ) {
                         // Convert termination reason to error for streaming
                         let err = match result.termination_reason {
@@ -268,11 +273,15 @@ fn build_response_from_stream_state<Ctx: LoopDepth + Send + Sync + 'static>(
 async fn phase_executing_tools<Ctx: LoopDepth + Send + Sync + 'static>(
     state: &mut ToolLoopStreamState<Ctx>,
 ) -> StreamPhase {
-    let (approved, denied) = approve_calls(&state.current_tool_calls, &state.config);
+    // Take ownership of accumulated tool calls; clone for assistant message content
+    let calls = std::mem::take(&mut state.current_tool_calls);
+    let assistant_calls: Vec<ContentBlock> =
+        calls.iter().cloned().map(ContentBlock::ToolCall).collect();
+    let (approved, denied) = approve_calls(calls, &state.config);
 
     let results = execute_with_events(
         &state.registry,
-        &approved,
+        approved,
         denied,
         state.config.parallel_tool_execution,
         &state.config,
@@ -288,12 +297,7 @@ async fn phase_executing_tools<Ctx: LoopDepth + Send + Sync + 'static>(
     if !state.current_text.is_empty() {
         assistant_content.push(ContentBlock::Text(std::mem::take(&mut state.current_text)));
     }
-    assistant_content.extend(
-        state
-            .current_tool_calls
-            .drain(..)
-            .map(ContentBlock::ToolCall),
-    );
+    assistant_content.extend(assistant_calls);
     state.params.messages.push(ChatMessage {
         role: crate::chat::ChatRole::Assistant,
         content: assistant_content,

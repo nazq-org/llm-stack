@@ -24,20 +24,21 @@ pub(crate) fn build_request<'a>(
     config: &'a OpenAiConfig,
     stream: bool,
 ) -> Result<Request<'a>, LlmError> {
-    let mut messages = convert_messages(&params.messages)?;
-
-    // Prepend system prompt as a system message if provided
-    if let Some(system) = &params.system {
-        messages.insert(
-            0,
-            Message {
-                role: "system",
-                content: Some(MessageContent::Text(system.clone())),
-                tool_calls: None,
-                tool_call_id: None,
-            },
-        );
-    }
+    // Build messages with optional system prompt prepended (avoids O(n) insert(0))
+    let converted = convert_messages(&params.messages)?;
+    let messages = if let Some(system) = &params.system {
+        let mut msgs = Vec::with_capacity(1 + converted.len());
+        msgs.push(Message {
+            role: "system",
+            content: Some(MessageContent::Text(system.clone())),
+            tool_calls: None,
+            tool_call_id: None,
+        });
+        msgs.extend(converted);
+        msgs
+    } else {
+        converted
+    };
 
     let tools = params.tools.as_ref().map(|tools| {
         tools

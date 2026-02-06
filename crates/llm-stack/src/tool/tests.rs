@@ -2476,3 +2476,646 @@ fn test_tool_retry_config_debug() {
     assert!(debug.contains("ToolRetryConfig"));
     assert!(debug.contains("max_retries"));
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Resumable Tool Loop Tests
+// ─────────────────────────────────────────────────────────────────────────────
+
+use super::loop_resumable::{LoopCommand, LoopEvent, ToolLoopHandle};
+
+#[tokio::test]
+async fn test_resumable_no_tools_completes() {
+    let mock = mock_for("test", "test-model");
+    mock.queue_response(sample_response("Hello!"));
+
+    let registry: ToolRegistry<()> = ToolRegistry::new();
+    let params = ChatParams {
+        messages: vec![ChatMessage::user("Hi")],
+        ..Default::default()
+    };
+
+    let mut handle = ToolLoopHandle::new(&mock, &registry, params, ToolLoopConfig::default(), &());
+    let event = handle.next_event().await;
+
+    assert!(
+        matches!(&event, LoopEvent::Completed { termination_reason, .. }
+            if *termination_reason == TerminationReason::Complete)
+    );
+    if let LoopEvent::Completed { response, .. } = &event {
+        assert_eq!(response.text(), Some("Hello!"));
+    }
+    assert!(handle.is_finished());
+}
+
+#[tokio::test]
+async fn test_resumable_one_tool_iteration() {
+    let mock = mock_for("test", "test-model");
+
+    // First: LLM requests tool
+    mock.queue_response(sample_tool_response(vec![ToolCall {
+        id: "call_1".into(),
+        name: "add".into(),
+        arguments: json!({"a": 2, "b": 3}),
+    }]));
+    // Second: LLM returns text
+    mock.queue_response(sample_response("The answer is 5"));
+
+    let mut registry: ToolRegistry<()> = ToolRegistry::new();
+    registry.register(AddTool);
+
+    let params = ChatParams {
+        messages: vec![ChatMessage::user("What is 2 + 3?")],
+        ..Default::default()
+    };
+
+    let mut handle = ToolLoopHandle::new(&mock, &registry, params, ToolLoopConfig::default(), &());
+
+    // First event: tools executed
+    let event = handle.next_event().await;
+    assert!(matches!(
+        &event,
+        LoopEvent::ToolsExecuted { iteration: 1, .. }
+    ));
+    if let LoopEvent::ToolsExecuted {
+        results,
+        tool_calls,
+        ..
+    } = &event
+    {
+        assert_eq!(tool_calls.len(), 1);
+        assert_eq!(tool_calls[0].name, "add");
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].content, "5");
+    }
+
+    // Resume
+    handle.resume(LoopCommand::Continue);
+
+    // Second event: completion
+    let event = handle.next_event().await;
+    assert!(
+        matches!(&event, LoopEvent::Completed { termination_reason, .. }
+            if *termination_reason == TerminationReason::Complete)
+    );
+    if let LoopEvent::Completed {
+        response,
+        iterations,
+        ..
+    } = &event
+    {
+        assert_eq!(*iterations, 2);
+        assert_eq!(response.text(), Some("The answer is 5"));
+    }
+}
+
+#[tokio::test]
+async fn test_resumable_inject_messages() {
+    let mock = mock_for("test", "test-model");
+
+    // First: tool call
+    mock.queue_response(sample_tool_response(vec![ToolCall {
+        id: "c1".into(),
+        name: "add".into(),
+        arguments: json!({"a": 1, "b": 2}),
+    }]));
+    // Second: text response
+    mock.queue_response(sample_response("Done with injection"));
+
+    let mut registry: ToolRegistry<()> = ToolRegistry::new();
+    registry.register(AddTool);
+
+    let params = ChatParams {
+        messages: vec![ChatMessage::user("Add numbers")],
+        ..Default::default()
+    };
+
+    let mut handle = ToolLoopHandle::new(&mock, &registry, params, ToolLoopConfig::default(), &());
+
+    let event = handle.next_event().await;
+    assert!(matches!(&event, LoopEvent::ToolsExecuted { .. }));
+
+    // Inject a message before next iteration
+    handle.resume(LoopCommand::InjectMessages(vec![ChatMessage::system(
+        "Additional context from worker",
+    )]));
+
+    let event = handle.next_event().await;
+    assert!(matches!(&event, LoopEvent::Completed { .. }));
+
+    // Verify the injected message was in the LLM call
+    let recorded = mock.recorded_calls();
+    let last_call = &recorded[1];
+    let has_injection = last_call.messages.iter().any(|m| {
+        m.content.iter().any(|b| {
+            if let ContentBlock::Text(t) = b {
+                t.contains("Additional context from worker")
+            } else {
+                false
+            }
+        })
+    });
+    assert!(has_injection, "Injected message should be in conversation");
+}
+
+#[tokio::test]
+async fn test_resumable_stop_command() {
+    let mock = mock_for("test", "test-model");
+
+    // First: tool call
+    mock.queue_response(sample_tool_response(vec![ToolCall {
+        id: "c1".into(),
+        name: "add".into(),
+        arguments: json!({"a": 1, "b": 2}),
+    }]));
+    // This should never be reached
+    mock.queue_response(sample_response("Should not appear"));
+
+    let mut registry: ToolRegistry<()> = ToolRegistry::new();
+    registry.register(AddTool);
+
+    let params = ChatParams {
+        messages: vec![ChatMessage::user("Stop early")],
+        ..Default::default()
+    };
+
+    let mut handle = ToolLoopHandle::new(&mock, &registry, params, ToolLoopConfig::default(), &());
+
+    let event = handle.next_event().await;
+    assert!(matches!(&event, LoopEvent::ToolsExecuted { .. }));
+
+    // Stop the loop
+    handle.resume(LoopCommand::Stop(Some("task_spawn detected".into())));
+
+    let event = handle.next_event().await;
+    assert!(
+        matches!(&event, LoopEvent::Completed { termination_reason, .. }
+        if matches!(termination_reason,
+            TerminationReason::StopCondition { reason: Some(r) } if r == "task_spawn detected"
+        ))
+    );
+
+    // Only 1 LLM call was made (the second was never reached)
+    assert_eq!(mock.recorded_calls().len(), 1);
+}
+
+#[tokio::test]
+async fn test_resumable_usage_accumulation() {
+    let mock = mock_for("test", "test-model");
+
+    // Two tool iterations + final text
+    mock.queue_response(sample_tool_response(vec![ToolCall {
+        id: "c1".into(),
+        name: "add".into(),
+        arguments: json!({"a": 1, "b": 2}),
+    }]));
+    mock.queue_response(sample_tool_response(vec![ToolCall {
+        id: "c2".into(),
+        name: "add".into(),
+        arguments: json!({"a": 3, "b": 4}),
+    }]));
+    mock.queue_response(sample_response("All done"));
+
+    let mut registry: ToolRegistry<()> = ToolRegistry::new();
+    registry.register(AddTool);
+
+    let params = ChatParams {
+        messages: vec![ChatMessage::user("Chain")],
+        ..Default::default()
+    };
+
+    let mut handle = ToolLoopHandle::new(&mock, &registry, params, ToolLoopConfig::default(), &());
+
+    // First iteration
+    let event = handle.next_event().await;
+    if let LoopEvent::ToolsExecuted { total_usage, .. } = &event {
+        assert_eq!(total_usage.input_tokens, 100); // 1 LLM call
+    }
+    handle.resume(LoopCommand::Continue);
+
+    // Second iteration
+    let event = handle.next_event().await;
+    if let LoopEvent::ToolsExecuted { total_usage, .. } = &event {
+        assert_eq!(total_usage.input_tokens, 200); // 2 LLM calls
+    }
+    handle.resume(LoopCommand::Continue);
+
+    // Completion
+    let event = handle.next_event().await;
+    if let LoopEvent::Completed { total_usage, .. } = &event {
+        // 3 LLM calls * 100 input tokens each
+        assert_eq!(total_usage.input_tokens, 300);
+        assert_eq!(total_usage.output_tokens, 150);
+    }
+
+    let result = handle.into_result();
+    assert_eq!(result.total_usage.input_tokens, 300);
+}
+
+#[tokio::test]
+async fn test_resumable_max_iterations() {
+    let mock = mock_for("test", "test-model");
+
+    // Keep returning tool calls
+    for _ in 0..5 {
+        mock.queue_response(sample_tool_response(vec![ToolCall {
+            id: "c".into(),
+            name: "add".into(),
+            arguments: json!({"a": 1, "b": 2}),
+        }]));
+    }
+
+    let mut registry: ToolRegistry<()> = ToolRegistry::new();
+    registry.register(AddTool);
+
+    let params = ChatParams {
+        messages: vec![ChatMessage::user("Loop")],
+        ..Default::default()
+    };
+    let config = ToolLoopConfig {
+        max_iterations: 2,
+        ..Default::default()
+    };
+
+    let mut handle = ToolLoopHandle::new(&mock, &registry, params, config, &());
+
+    // First iteration: tools executed
+    let event = handle.next_event().await;
+    assert!(matches!(
+        &event,
+        LoopEvent::ToolsExecuted { iteration: 1, .. }
+    ));
+    handle.resume(LoopCommand::Continue);
+
+    // Second iteration: tools executed
+    let event = handle.next_event().await;
+    assert!(matches!(
+        &event,
+        LoopEvent::ToolsExecuted { iteration: 2, .. }
+    ));
+    handle.resume(LoopCommand::Continue);
+
+    // Third: max iterations exceeded
+    let event = handle.next_event().await;
+    assert!(
+        matches!(&event, LoopEvent::Completed { termination_reason, .. }
+            if matches!(termination_reason, TerminationReason::MaxIterations { limit: 2 }))
+    );
+}
+
+#[tokio::test]
+async fn test_resumable_depth_exceeded() {
+    #[derive(Clone)]
+    struct DepthCtx(u32);
+    impl super::LoopDepth for DepthCtx {
+        fn loop_depth(&self) -> u32 {
+            self.0
+        }
+        fn with_depth(&self, depth: u32) -> Self {
+            DepthCtx(depth)
+        }
+    }
+
+    let mock = mock_for("test", "test-model");
+    let params = ChatParams {
+        messages: vec![ChatMessage::user("Hi")],
+        ..Default::default()
+    };
+
+    // Create config with max_depth=1, but context depth is already 1
+    let config = ToolLoopConfig {
+        max_depth: Some(1),
+        ..Default::default()
+    };
+
+    let registry_typed: ToolRegistry<DepthCtx> = ToolRegistry::new();
+    let ctx = DepthCtx(1); // Already at depth 1, max is 1
+    let mut handle = ToolLoopHandle::new(&mock, &registry_typed, params, config, &ctx);
+
+    let event = handle.next_event().await;
+    assert!(matches!(
+        &event,
+        LoopEvent::Error {
+            error: crate::LlmError::MaxDepthExceeded {
+                current: 1,
+                limit: 1
+            },
+            ..
+        }
+    ));
+    assert!(handle.is_finished());
+}
+
+#[tokio::test]
+async fn test_resumable_messages_access() {
+    let mock = mock_for("test", "test-model");
+
+    mock.queue_response(sample_tool_response(vec![ToolCall {
+        id: "c1".into(),
+        name: "add".into(),
+        arguments: json!({"a": 1, "b": 2}),
+    }]));
+    mock.queue_response(sample_response("Done"));
+
+    let mut registry: ToolRegistry<()> = ToolRegistry::new();
+    registry.register(AddTool);
+
+    let params = ChatParams {
+        messages: vec![ChatMessage::user("Go")],
+        ..Default::default()
+    };
+
+    let mut handle = ToolLoopHandle::new(&mock, &registry, params, ToolLoopConfig::default(), &());
+
+    // Before any iteration: just the user message
+    assert_eq!(handle.messages().len(), 1);
+
+    let event = handle.next_event().await;
+    assert!(matches!(&event, LoopEvent::ToolsExecuted { .. }));
+
+    // After tool execution: user + assistant (with tool call) + tool result
+    assert_eq!(handle.messages().len(), 3);
+
+    handle.resume(LoopCommand::Continue);
+    let _ = handle.next_event().await;
+
+    // After completion: messages unchanged (no new tool calls)
+    // User + assistant(tool_call) + tool_result + assistant(text) = depends on impl
+    assert!(handle.messages().len() >= 3);
+}
+
+#[tokio::test]
+async fn test_resumable_into_result() {
+    let mock = mock_for("test", "test-model");
+    mock.queue_response(sample_response("Quick"));
+
+    let registry: ToolRegistry<()> = ToolRegistry::new();
+    let params = ChatParams {
+        messages: vec![ChatMessage::user("Hi")],
+        ..Default::default()
+    };
+
+    let mut handle = ToolLoopHandle::new(&mock, &registry, params, ToolLoopConfig::default(), &());
+    let _ = handle.next_event().await;
+
+    let result = handle.into_result();
+    assert_eq!(result.termination_reason, TerminationReason::Complete);
+    assert_eq!(result.iterations, 1);
+    assert_eq!(result.total_usage.input_tokens, 100);
+}
+
+#[tokio::test]
+async fn test_resumable_repeated_next_after_completion() {
+    let mock = mock_for("test", "test-model");
+    mock.queue_response(sample_response("Done"));
+
+    let registry: ToolRegistry<()> = ToolRegistry::new();
+    let params = ChatParams {
+        messages: vec![ChatMessage::user("Hi")],
+        ..Default::default()
+    };
+
+    let mut handle = ToolLoopHandle::new(&mock, &registry, params, ToolLoopConfig::default(), &());
+
+    // First call: completion
+    let event = handle.next_event().await;
+    assert!(matches!(&event, LoopEvent::Completed { .. }));
+
+    // Second call: same terminal event
+    let event = handle.next_event().await;
+    assert!(matches!(&event, LoopEvent::Completed { .. }));
+}
+
+#[tokio::test]
+async fn test_resumable_stop_condition_callback() {
+    let mock = mock_for("test", "test-model");
+
+    mock.queue_response(sample_tool_response(vec![ToolCall {
+        id: "c1".into(),
+        name: "add".into(),
+        arguments: json!({"a": 2, "b": 3}),
+    }]));
+
+    let mut registry: ToolRegistry<()> = ToolRegistry::new();
+    registry.register(AddTool);
+
+    let params = ChatParams {
+        messages: vec![ChatMessage::user("Test stop")],
+        ..Default::default()
+    };
+
+    // Stop immediately via config callback
+    let config = ToolLoopConfig {
+        stop_when: Some(Arc::new(|_| StopDecision::Stop)),
+        ..Default::default()
+    };
+
+    let mut handle = ToolLoopHandle::new(&mock, &registry, params, config, &());
+    let event = handle.next_event().await;
+
+    // Should stop without executing tools
+    assert!(
+        matches!(&event, LoopEvent::Completed { termination_reason, .. }
+            if matches!(termination_reason, TerminationReason::StopCondition { reason: None }))
+    );
+}
+
+#[tokio::test]
+async fn test_resumable_convenience_function() {
+    use super::loop_resumable::tool_loop_resumable;
+
+    let mock = mock_for("test", "test-model");
+    mock.queue_response(sample_response("Via convenience"));
+
+    let registry: ToolRegistry<()> = ToolRegistry::new();
+    let params = ChatParams {
+        messages: vec![ChatMessage::user("Hi")],
+        ..Default::default()
+    };
+
+    let mut handle = tool_loop_resumable(&mock, &registry, params, ToolLoopConfig::default(), &());
+    let event = handle.next_event().await;
+
+    assert!(matches!(&event, LoopEvent::Completed { .. }));
+    if let LoopEvent::Completed { response, .. } = &event {
+        assert_eq!(response.text(), Some("Via convenience"));
+    }
+}
+
+#[tokio::test]
+async fn test_resumable_debug_impl() {
+    let mock = mock_for("test", "test-model");
+    mock.queue_response(sample_response("Debug"));
+
+    let registry: ToolRegistry<()> = ToolRegistry::new();
+    let params = ChatParams {
+        messages: vec![ChatMessage::user("Hi")],
+        ..Default::default()
+    };
+
+    let handle = ToolLoopHandle::new(&mock, &registry, params, ToolLoopConfig::default(), &());
+    let debug = format!("{handle:?}");
+    assert!(debug.contains("ToolLoopHandle"));
+    assert!(debug.contains("iterations"));
+    assert!(debug.contains("finished"));
+}
+
+#[tokio::test]
+async fn test_resumable_multi_iteration_with_mixed_commands() {
+    let mock = mock_for("test", "test-model");
+
+    // Iteration 1: tool call
+    mock.queue_response(sample_tool_response(vec![ToolCall {
+        id: "c1".into(),
+        name: "add".into(),
+        arguments: json!({"a": 1, "b": 2}),
+    }]));
+    // Iteration 2: another tool call (after injection)
+    mock.queue_response(sample_tool_response(vec![ToolCall {
+        id: "c2".into(),
+        name: "add".into(),
+        arguments: json!({"a": 10, "b": 20}),
+    }]));
+    // Iteration 3: final text
+    mock.queue_response(sample_response("All done"));
+
+    let mut registry: ToolRegistry<()> = ToolRegistry::new();
+    registry.register(AddTool);
+
+    let params = ChatParams {
+        messages: vec![ChatMessage::user("Mix commands")],
+        ..Default::default()
+    };
+
+    let mut handle = ToolLoopHandle::new(&mock, &registry, params, ToolLoopConfig::default(), &());
+
+    // Iteration 1: Continue
+    let event = handle.next_event().await;
+    assert!(matches!(
+        &event,
+        LoopEvent::ToolsExecuted { iteration: 1, .. }
+    ));
+    handle.resume(LoopCommand::Continue);
+
+    // Iteration 2: Inject messages
+    let event = handle.next_event().await;
+    assert!(matches!(
+        &event,
+        LoopEvent::ToolsExecuted { iteration: 2, .. }
+    ));
+    handle.resume(LoopCommand::InjectMessages(vec![ChatMessage::user(
+        "Worker completed task X",
+    )]));
+
+    // Iteration 3: Completion
+    let event = handle.next_event().await;
+    assert!(matches!(&event, LoopEvent::Completed { iterations: 3, .. }));
+
+    // Verify the injection was in the final LLM call
+    let recorded = mock.recorded_calls();
+    let last_call = &recorded[2];
+    let has_worker_msg = last_call.messages.iter().any(|m| {
+        m.content.iter().any(|b| {
+            if let ContentBlock::Text(t) = b {
+                t.contains("Worker completed task X")
+            } else {
+                false
+            }
+        })
+    });
+    assert!(has_worker_msg);
+}
+
+#[tokio::test]
+async fn test_resumable_timeout() {
+    let mock = mock_for("test", "test-model");
+
+    mock.queue_response(sample_tool_response(vec![ToolCall {
+        id: "c".into(),
+        name: "add".into(),
+        arguments: json!({"a": 1, "b": 2}),
+    }]));
+
+    let mut registry: ToolRegistry<()> = ToolRegistry::new();
+    registry.register(AddTool);
+
+    let params = ChatParams {
+        messages: vec![ChatMessage::user("Timeout")],
+        ..Default::default()
+    };
+
+    // Zero timeout: should trigger on second iteration
+    let config = ToolLoopConfig {
+        timeout: Some(Duration::ZERO),
+        ..Default::default()
+    };
+
+    let mut handle = ToolLoopHandle::new(&mock, &registry, params, config, &());
+
+    // First event might be tools executed or timeout depending on timing.
+    // With Duration::ZERO, the timeout check happens at the start of the
+    // first iteration, but Instant::now() was set in new() so elapsed > 0.
+    let event = handle.next_event().await;
+    assert!(
+        matches!(&event, LoopEvent::Completed { termination_reason, .. }
+            if matches!(termination_reason, TerminationReason::Timeout { .. }))
+    );
+}
+
+#[tokio::test]
+async fn test_resumable_on_event_callback() {
+    use std::sync::Mutex;
+
+    let mock = mock_for("test", "test-model");
+
+    mock.queue_response(sample_tool_response(vec![ToolCall {
+        id: "c1".into(),
+        name: "add".into(),
+        arguments: json!({"a": 2, "b": 3}),
+    }]));
+    mock.queue_response(sample_response("Done"));
+
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let events_clone = Arc::clone(&events);
+
+    let mut registry: ToolRegistry<()> = ToolRegistry::new();
+    registry.register(AddTool);
+
+    let params = ChatParams {
+        messages: vec![ChatMessage::user("Events")],
+        ..Default::default()
+    };
+    let config = ToolLoopConfig {
+        on_event: Some(Arc::new(move |event| {
+            events_clone.lock().unwrap().push(event);
+        })),
+        ..Default::default()
+    };
+
+    let mut handle = ToolLoopHandle::new(&mock, &registry, params, config, &());
+
+    let _ = handle.next_event().await;
+    handle.resume(LoopCommand::Continue);
+    let _ = handle.next_event().await;
+
+    let captured = events.lock().unwrap();
+    assert!(
+        captured
+            .iter()
+            .any(|e| matches!(e, ToolLoopEvent::IterationStart { .. }))
+    );
+    assert!(
+        captured
+            .iter()
+            .any(|e| matches!(e, ToolLoopEvent::ToolExecutionStart { .. }))
+    );
+    assert!(
+        captured
+            .iter()
+            .any(|e| matches!(e, ToolLoopEvent::ToolExecutionEnd { .. }))
+    );
+    assert!(
+        captured
+            .iter()
+            .any(|e| matches!(e, ToolLoopEvent::LlmResponseReceived { .. }))
+    );
+}

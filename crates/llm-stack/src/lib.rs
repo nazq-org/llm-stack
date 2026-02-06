@@ -98,10 +98,10 @@ pub use provider::{
 };
 pub use stream::{ChatStream, StreamEvent};
 pub use tool::{
-    FnToolHandler, LoopAction, LoopDepth, LoopDetectionConfig, NoCtxToolHandler, StopConditionFn,
-    StopContext, StopDecision, TerminationReason, ToolApproval, ToolError, ToolHandler,
-    ToolLoopConfig, ToolLoopEvent, ToolLoopResult, ToolOutput, ToolRegistry, tool_fn,
-    tool_fn_with_ctx, tool_loop_channel,
+    FnToolHandler, LoopAction, LoopCommand, LoopDepth, LoopDetectionConfig, LoopEvent,
+    NoCtxToolHandler, StopConditionFn, StopContext, StopDecision, TerminationReason, ToolApproval,
+    ToolError, ToolHandler, ToolLoopConfig, ToolLoopEvent, ToolLoopHandle, ToolLoopResult,
+    ToolOutput, ToolRegistry, tool_fn, tool_fn_with_ctx, tool_loop_channel, tool_loop_resumable,
 };
 pub use usage::{Cost, ModelPricing, Usage, UsageTracker};
 
