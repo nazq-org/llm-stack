@@ -135,6 +135,7 @@ src/
     loop_sync.rs    tool_loop() with depth checking
     loop_stream.rs  tool_loop_stream() with depth checking
     loop_channel.rs tool_loop_channel() for backpressure
+    loop_resumable.rs ToolLoopHandle, LoopEvent, LoopCommand (caller-driven)
     loop_detection.rs Loop detection logic
     execution.rs    Tool execution with events
     approval.rs     ToolApproval handling

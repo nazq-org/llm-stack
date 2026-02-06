@@ -14,6 +14,7 @@
 //!       │
 //!   tool_loop()        — automates generate → execute → feedback cycle
 //!   tool_loop_stream() — streaming variant
+//!   ToolLoopHandle     — caller-driven resumable variant
 //! ```
 //!
 //! # Example
@@ -139,6 +140,7 @@ mod handler;
 mod helpers;
 mod loop_channel;
 mod loop_detection;
+mod loop_resumable;
 mod loop_stream;
 mod loop_sync;
 mod output;
@@ -154,6 +156,7 @@ pub use error::ToolError;
 pub use handler::{FnToolHandler, NoCtxToolHandler, ToolHandler};
 pub use helpers::{tool_fn, tool_fn_with_ctx};
 pub use loop_channel::tool_loop_channel;
+pub use loop_resumable::{LoopCommand, LoopEvent, ToolLoopHandle, tool_loop_resumable};
 pub use loop_stream::tool_loop_stream;
 pub use loop_sync::tool_loop;
 pub use output::ToolOutput;

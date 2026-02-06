@@ -2,13 +2,28 @@
 
 use serde_json::Value;
 
-use crate::chat::{ChatMessage, ChatResponse, ToolCall};
+use crate::chat::{ChatMessage, ChatResponse, ToolCall, ToolResult};
 use crate::usage::Usage;
 
 use super::config::{
     LoopAction, LoopDetectionConfig, TerminationReason, ToolLoopConfig, ToolLoopEvent,
     ToolLoopResult,
 };
+
+/// Read-only snapshot of the current iteration state.
+///
+/// Bundles the data that both stop-condition checks and loop-detection checks
+/// need, avoiding long argument lists across the three loop implementations
+/// (sync, streaming, resumable).
+pub(crate) struct IterationSnapshot<'a> {
+    pub response: &'a ChatResponse,
+    pub call_refs: &'a [&'a ToolCall],
+    pub iterations: u32,
+    pub total_usage: &'a Usage,
+    pub tool_calls_executed: usize,
+    pub last_tool_results: &'a [ToolResult],
+    pub config: &'a ToolLoopConfig,
+}
 
 /// Tracks consecutive identical tool calls for loop detection.
 #[derive(Debug, Default)]
@@ -208,50 +223,25 @@ pub(crate) fn create_loop_warning_message(tool_name: &str, count: u32) -> ChatMe
     ))
 }
 
-/// Handle loop detection result, returns result if should stop.
-#[allow(clippy::too_many_arguments)]
+/// Handle loop detection result, returning a termination result if the loop should stop.
+///
+/// Mutates `messages` if the action is `InjectWarning`.
 pub(crate) fn handle_loop_detection(
     state: &mut LoopDetectionState,
-    calls: &[ToolCall],
-    config: Option<&LoopDetectionConfig>,
-    loop_config: &ToolLoopConfig,
+    snap: &IterationSnapshot<'_>,
     messages: &mut Vec<ChatMessage>,
-    response: &ChatResponse,
-    iterations: u32,
-    total_usage: &Usage,
 ) -> Option<ToolLoopResult> {
-    let refs: Vec<&ToolCall> = calls.iter().collect();
-    handle_loop_detection_refs(
+    match check_loop_detection_refs(
         state,
-        &refs,
-        config,
-        loop_config,
-        messages,
-        response,
-        iterations,
-        total_usage,
-    )
-}
-
-/// Handle loop detection result, returns result if should stop.
-/// This version works with tool call references (before consuming response).
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn handle_loop_detection_refs(
-    state: &mut LoopDetectionState,
-    calls: &[&ToolCall],
-    config: Option<&LoopDetectionConfig>,
-    loop_config: &ToolLoopConfig,
-    messages: &mut Vec<ChatMessage>,
-    response: &ChatResponse,
-    iterations: u32,
-    total_usage: &Usage,
-) -> Option<ToolLoopResult> {
-    match check_loop_detection_refs(state, calls, config, loop_config) {
+        snap.call_refs,
+        snap.config.loop_detection.as_ref(),
+        snap.config,
+    ) {
         LoopCheckResult::Continue => None,
         LoopCheckResult::Stop { tool_name, count } => Some(ToolLoopResult {
-            response: response.clone(),
-            iterations,
-            total_usage: total_usage.clone(),
+            response: snap.response.clone(),
+            iterations: snap.iterations,
+            total_usage: snap.total_usage.clone(),
             termination_reason: TerminationReason::LoopDetected { tool_name, count },
         }),
         LoopCheckResult::InjectWarning { tool_name, count } => {

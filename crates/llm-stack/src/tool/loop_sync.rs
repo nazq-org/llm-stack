@@ -14,7 +14,7 @@ use super::config::{
     StopContext, StopDecision, TerminationReason, ToolLoopConfig, ToolLoopEvent, ToolLoopResult,
 };
 use super::execution::execute_with_events;
-use super::loop_detection::{LoopDetectionState, handle_loop_detection_refs};
+use super::loop_detection::{IterationSnapshot, LoopDetectionState, handle_loop_detection};
 
 /// Runs the LLM in a tool-calling loop until completion.
 ///
@@ -115,16 +115,19 @@ pub async fn tool_loop<Ctx: LoopDepth + Send + Sync + 'static>(
             text_length,
         });
 
-        // Check stop condition and natural termination (uses references only)
-        if let Some(result) = check_stop_condition_refs(
-            &config,
-            &response,
+        // Build the iteration snapshot once for both checks
+        let snap = IterationSnapshot {
+            response: &response,
+            call_refs: &call_refs,
             iterations,
-            &total_usage,
+            total_usage: &total_usage,
             tool_calls_executed,
-            &last_tool_results,
-            &call_refs,
-        ) {
+            last_tool_results: &last_tool_results,
+            config: &config,
+        };
+
+        // Check stop condition and natural termination
+        if let Some(result) = check_stop_condition(&snap) {
             return Ok(result);
         }
 
@@ -139,17 +142,8 @@ pub async fn tool_loop<Ctx: LoopDepth + Send + Sync + 'static>(
             });
         }
 
-        // Check for loop detection before executing tools (uses references only)
-        if let Some(result) = handle_loop_detection_refs(
-            &mut loop_state,
-            &call_refs,
-            config.loop_detection.as_ref(),
-            &config,
-            &mut params.messages,
-            &response,
-            iterations,
-            &total_usage,
-        ) {
+        // Check for loop detection before executing tools
+        if let Some(result) = handle_loop_detection(&mut loop_state, &snap, &mut params.messages) {
             return Ok(result);
         }
 
@@ -158,10 +152,10 @@ pub async fn tool_loop<Ctx: LoopDepth + Send + Sync + 'static>(
 
         // Apply approval callback and execute with events
         // Tools receive nested_ctx with incremented depth
-        let (approved_calls, denied_results) = approve_calls(&calls, &config);
+        let (approved_calls, denied_results) = approve_calls(calls, &config);
         let results = execute_with_events(
             registry,
-            &approved_calls,
+            approved_calls,
             denied_results,
             config.parallel_tool_execution,
             &config,
@@ -200,41 +194,31 @@ where
 }
 
 /// Check stop condition and natural termination, returning result if should stop.
-/// This version works with references to tool calls (before consuming response).
-#[allow(clippy::too_many_arguments)]
-fn check_stop_condition_refs(
-    config: &ToolLoopConfig,
-    response: &ChatResponse,
-    iterations: u32,
-    total_usage: &Usage,
-    tool_calls_executed: usize,
-    last_tool_results: &[ToolResult],
-    call_refs: &[&ToolCall],
-) -> Option<ToolLoopResult> {
+fn check_stop_condition(snap: &IterationSnapshot<'_>) -> Option<ToolLoopResult> {
     // Check custom stop condition
-    if let Some(ref stop_fn) = config.stop_when {
+    if let Some(ref stop_fn) = snap.config.stop_when {
         let ctx = StopContext {
-            iteration: iterations,
-            response,
-            total_usage,
-            tool_calls_executed,
-            last_tool_results,
+            iteration: snap.iterations,
+            response: snap.response,
+            total_usage: snap.total_usage,
+            tool_calls_executed: snap.tool_calls_executed,
+            last_tool_results: snap.last_tool_results,
         };
         match stop_fn(&ctx) {
             StopDecision::Continue => {}
             StopDecision::Stop => {
                 return Some(ToolLoopResult {
-                    response: response.clone(),
-                    iterations,
-                    total_usage: total_usage.clone(),
+                    response: snap.response.clone(),
+                    iterations: snap.iterations,
+                    total_usage: snap.total_usage.clone(),
                     termination_reason: TerminationReason::StopCondition { reason: None },
                 });
             }
             StopDecision::StopWithReason(reason) => {
                 return Some(ToolLoopResult {
-                    response: response.clone(),
-                    iterations,
-                    total_usage: total_usage.clone(),
+                    response: snap.response.clone(),
+                    iterations: snap.iterations,
+                    total_usage: snap.total_usage.clone(),
                     termination_reason: TerminationReason::StopCondition {
                         reason: Some(reason),
                     },
@@ -244,11 +228,11 @@ fn check_stop_condition_refs(
     }
 
     // Check natural termination (no tool calls)
-    if call_refs.is_empty() || response.stop_reason != StopReason::ToolUse {
+    if snap.call_refs.is_empty() || snap.response.stop_reason != StopReason::ToolUse {
         return Some(ToolLoopResult {
-            response: response.clone(),
-            iterations,
-            total_usage: total_usage.clone(),
+            response: snap.response.clone(),
+            iterations: snap.iterations,
+            total_usage: snap.total_usage.clone(),
             termination_reason: TerminationReason::Complete,
         });
     }

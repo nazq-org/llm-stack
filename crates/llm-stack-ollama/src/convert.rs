@@ -22,20 +22,21 @@ pub(crate) fn build_request(
     config: &OllamaConfig,
     stream: bool,
 ) -> Result<Request, LlmError> {
-    let mut messages = convert_messages(&params.messages)?;
-
-    // Prepend system prompt as a system message if provided
-    if let Some(system) = &params.system {
-        messages.insert(
-            0,
-            Message {
-                role: "system".into(),
-                content: system.clone(),
-                images: None,
-                tool_calls: None,
-            },
-        );
-    }
+    // Build messages with optional system prompt prepended (avoids O(n) insert(0))
+    let converted = convert_messages(&params.messages)?;
+    let messages = if let Some(system) = &params.system {
+        let mut msgs = Vec::with_capacity(1 + converted.len());
+        msgs.push(Message {
+            role: "system".into(),
+            content: system.clone(),
+            images: None,
+            tool_calls: None,
+        });
+        msgs.extend(converted);
+        msgs
+    } else {
+        converted
+    };
 
     // ToolChoice::None means "don't use tools" — omit them from the request.
     let tools_disabled = matches!(params.tool_choice, Some(ToolChoice::None));
