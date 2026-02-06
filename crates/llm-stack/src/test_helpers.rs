@@ -39,6 +39,22 @@ pub fn sample_tool_response(calls: Vec<ToolCall>) -> ChatResponse {
     }
 }
 
+/// Builds a [`ChatResponse`] containing tool calls AND a text block.
+///
+/// Simulates an LLM that says something ("I'll help with that") alongside
+/// requesting tool calls.
+pub fn sample_tool_response_with_text(text: &str, calls: Vec<ToolCall>) -> ChatResponse {
+    let mut content: Vec<ContentBlock> = vec![ContentBlock::Text(text.into())];
+    content.extend(calls.into_iter().map(ContentBlock::ToolCall));
+    ChatResponse {
+        content,
+        usage: sample_usage(),
+        stop_reason: StopReason::ToolUse,
+        model: "test-model".into(),
+        metadata: HashMap::new(),
+    }
+}
+
 /// Returns a [`Usage`] with 100 input / 50 output tokens.
 pub fn sample_usage() -> Usage {
     Usage {

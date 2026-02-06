@@ -156,7 +156,9 @@ pub use error::ToolError;
 pub use handler::{FnToolHandler, NoCtxToolHandler, ToolHandler};
 pub use helpers::{tool_fn, tool_fn_with_ctx};
 pub use loop_channel::tool_loop_channel;
-pub use loop_resumable::{LoopCommand, LoopEvent, ToolLoopHandle, tool_loop_resumable};
+pub use loop_resumable::{
+    Completed, LoopCommand, ToolLoopHandle, TurnError, TurnResult, Yielded, tool_loop_resumable,
+};
 pub use loop_stream::tool_loop_stream;
 pub use loop_sync::tool_loop;
 pub use output::ToolOutput;
