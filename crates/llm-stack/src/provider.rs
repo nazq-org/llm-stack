@@ -335,7 +335,11 @@ pub struct ToolDefinition {
     /// JSON Schema describing the tool's expected input.
     pub parameters: JsonSchema,
     /// Optional retry configuration for this tool.
-    /// When present, failed tool executions will be automatically retried.
+    ///
+    /// When present, failed tool executions will be automatically retried
+    /// with exponential backoff. This is a **runtime-only** setting — it is
+    /// not serialized (skipped during serde) because it's not part of the
+    /// tool schema sent to the LLM.
     #[serde(skip)]
     pub retry: Option<ToolRetryConfig>,
 }

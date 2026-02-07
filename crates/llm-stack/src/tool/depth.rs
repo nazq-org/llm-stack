@@ -4,6 +4,21 @@
 //! prevents runaway recursion. Use [`LoopContext`] for built-in depth
 //! management, or implement [`LoopDepth`] manually on your own type.
 //!
+//! # Depth semantics
+//!
+//! - **Depth 0** = the outermost (top-level) loop. This is the initial
+//!   context created by the application before entering any tool loop.
+//! - **Depth N** = the context is inside N levels of nested tool loops.
+//! - `LoopCore::new()` auto-increments: if you pass a context at depth 0,
+//!   tools inside that loop receive a context at depth 1. Tools that spawn
+//!   their own `tool_loop` will pass depth 1 in, and their inner tools
+//!   see depth 2, etc.
+//! - `max_depth` is checked *before* incrementing: if `ctx.loop_depth() >= max_depth`,
+//!   the loop immediately returns `LlmError::MaxDepthExceeded`. With the default
+//!   `max_depth = Some(3)`, the deepest allowed nesting is master(0) → worker(1) → sub-worker(2).
+//!   A tool at depth 2 trying to spawn another loop would be rejected (2 >= 3 is false,
+//!   but a tool at depth 3 would be: 3 >= 3 is true).
+//!
 //! # Using `LoopContext` (recommended)
 //!
 //! ```rust
@@ -41,19 +56,21 @@
 
 /// Trait for contexts that support automatic depth tracking in nested tool loops.
 ///
-/// When `tool_loop` executes tools, it passes a context with incremented depth
-/// so that nested loops can enforce depth limits via `max_depth` in
-/// [`ToolLoopConfig`](super::ToolLoopConfig).
+/// When `tool_loop` executes tools, `LoopCore` calls
+/// `ctx.with_depth(ctx.loop_depth() + 1)` and passes the result to tool
+/// handlers. If a tool handler then enters its own `tool_loop`, the depth
+/// is checked against [`ToolLoopConfig::max_depth`](super::ToolLoopConfig::max_depth)
+/// and the loop is rejected if the limit is reached.
 ///
 /// # Blanket Implementation
 ///
-/// The unit type `()` has a blanket implementation that always returns depth 0.
-/// Use this for simple cases where depth tracking isn't needed:
+/// The unit type `()` has a blanket implementation that always returns depth 0
+/// and ignores `with_depth`. Use this for simple cases where depth tracking
+/// isn't needed:
 ///
 /// ```rust
 /// use llm_stack::tool::LoopDepth;
 ///
-/// // () always returns 0, ignores depth changes
 /// assert_eq!(().loop_depth(), 0);
 /// assert_eq!(().with_depth(5), ());
 /// ```
@@ -85,15 +102,14 @@
 /// }
 /// ```
 pub trait LoopDepth: Clone + Send + Sync {
-    /// Returns the current nesting depth.
-    ///
-    /// A depth of 0 means this is the top-level loop (not nested).
+    /// Returns the current nesting depth (0 = top-level, not nested).
     fn loop_depth(&self) -> u32;
 
     /// Returns a new context with the specified depth.
     ///
-    /// Called by `tool_loop` when passing context to tool handlers,
-    /// incrementing depth for any nested loops.
+    /// Called internally by `LoopCore::new()` as
+    /// `ctx.with_depth(ctx.loop_depth() + 1)` — tool handlers receive
+    /// a context one level deeper than their parent loop.
     #[must_use]
     fn with_depth(&self, depth: u32) -> Self;
 }

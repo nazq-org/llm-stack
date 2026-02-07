@@ -66,7 +66,9 @@ use super::LoopDepth;
 use super::ToolRegistry;
 use super::config::{ToolLoopConfig, ToolLoopResult};
 use super::loop_core::{CompletedData, ErrorData, IterationOutcome, LoopCore};
-use super::loop_resumable::{Completed, LoopCommand, TurnError};
+use super::loop_resumable::{
+    Completed, LoopCommand, TurnError, impl_yielded_methods, outcome_to_turn_result,
+};
 
 /// Result of one turn of the owned tool loop.
 ///
@@ -110,54 +112,7 @@ pub struct OwnedYielded<'h, Ctx: LoopDepth + Send + Sync + 'static> {
     pub total_usage: Usage,
 }
 
-impl<Ctx: LoopDepth + Send + Sync + 'static> OwnedYielded<'_, Ctx> {
-    /// Continue with the given command.
-    pub fn resume(self, command: LoopCommand) {
-        self.handle.resume(command);
-    }
-
-    /// Convenience: continue to the next LLM iteration with no injected messages.
-    pub fn continue_loop(self) {
-        self.resume(LoopCommand::Continue);
-    }
-
-    /// Convenience: inject messages and continue.
-    pub fn inject_and_continue(self, messages: Vec<ChatMessage>) {
-        self.resume(LoopCommand::InjectMessages(messages));
-    }
-
-    /// Convenience: stop the loop.
-    pub fn stop(self, reason: Option<String>) {
-        self.resume(LoopCommand::Stop(reason));
-    }
-
-    /// Extract text from `assistant_content` blocks.
-    ///
-    /// Returns the LLM's "thinking aloud" text emitted alongside tool calls,
-    /// or `None` if there were no text blocks.
-    pub fn assistant_text(&self) -> Option<String> {
-        let text: String = self
-            .assistant_content
-            .iter()
-            .filter_map(|block| match block {
-                ContentBlock::Text(t) => Some(t.as_str()),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        if text.is_empty() { None } else { Some(text) }
-    }
-
-    /// Access the full message history (read-only).
-    pub fn messages(&self) -> &[ChatMessage] {
-        self.handle.messages()
-    }
-
-    /// Access the full message history (mutable, for context compaction).
-    pub fn messages_mut(&mut self) -> &mut Vec<ChatMessage> {
-        self.handle.messages_mut()
-    }
-}
+impl_yielded_methods!(OwnedYielded<'h>);
 
 // ── OwnedToolLoopHandle ─────────────────────────────────────────────
 
@@ -223,42 +178,7 @@ impl<Ctx: LoopDepth + Send + Sync + 'static> OwnedToolLoopHandle<Ctx> {
             .core
             .do_iteration(&*self.provider, &self.registry)
             .await;
-        match outcome {
-            IterationOutcome::ToolsExecuted {
-                tool_calls,
-                results,
-                assistant_content,
-                iteration,
-                total_usage,
-            } => OwnedTurnResult::Yielded(OwnedYielded {
-                handle: self,
-                tool_calls,
-                results,
-                assistant_content,
-                iteration,
-                total_usage,
-            }),
-            IterationOutcome::Completed(CompletedData {
-                response,
-                termination_reason,
-                iterations,
-                total_usage,
-            }) => OwnedTurnResult::Completed(Completed {
-                response,
-                termination_reason,
-                iterations,
-                total_usage,
-            }),
-            IterationOutcome::Error(ErrorData {
-                error,
-                iterations,
-                total_usage,
-            }) => OwnedTurnResult::Error(TurnError {
-                error,
-                iterations,
-                total_usage,
-            }),
-        }
+        outcome_to_turn_result!(outcome, self, OwnedTurnResult, OwnedYielded)
     }
 
     /// Tell the loop how to proceed before the next `next_turn()` call.

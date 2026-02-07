@@ -65,6 +65,119 @@ use super::ToolRegistry;
 use super::config::{TerminationReason, ToolLoopConfig, ToolLoopResult};
 use super::loop_core::{CompletedData, ErrorData, IterationOutcome, LoopCore};
 
+// ── Shared macros for Yielded-like types ─────────────────────────────
+
+/// Implements the common methods on a `Yielded`-like struct.
+///
+/// Both `Yielded` and `OwnedYielded` have identical field layouts and
+/// method bodies. The only difference is the handle type they borrow.
+/// This macro eliminates the duplication.
+///
+/// Expects the struct to have fields: `handle`, `assistant_content`,
+/// `tool_calls`, `results`, `iteration`, `total_usage`.
+macro_rules! impl_yielded_methods {
+    ($yielded:ident < $($lt:lifetime),* >) => {
+        impl<$($lt,)* Ctx: LoopDepth + Send + Sync + 'static> $yielded<$($lt,)* Ctx> {
+            /// Continue with the given command.
+            pub fn resume(self, command: LoopCommand) {
+                self.handle.resume(command);
+            }
+
+            /// Convenience: continue to the next LLM iteration with no injected messages.
+            pub fn continue_loop(self) {
+                self.resume(LoopCommand::Continue);
+            }
+
+            /// Convenience: inject messages and continue.
+            pub fn inject_and_continue(self, messages: Vec<ChatMessage>) {
+                self.resume(LoopCommand::InjectMessages(messages));
+            }
+
+            /// Convenience: stop the loop.
+            pub fn stop(self, reason: Option<String>) {
+                self.resume(LoopCommand::Stop(reason));
+            }
+
+            /// Extract text from `assistant_content` blocks.
+            ///
+            /// Returns the LLM's "thinking aloud" text emitted alongside tool calls,
+            /// or `None` if there were no text blocks.
+            pub fn assistant_text(&self) -> Option<String> {
+                let text: String = self
+                    .assistant_content
+                    .iter()
+                    .filter_map(|block| match block {
+                        ContentBlock::Text(t) => Some(t.as_str()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                if text.is_empty() { None } else { Some(text) }
+            }
+
+            /// Access the full message history (read-only).
+            pub fn messages(&self) -> &[ChatMessage] {
+                self.handle.messages()
+            }
+
+            /// Access the full message history (mutable, for context compaction).
+            pub fn messages_mut(&mut self) -> &mut Vec<ChatMessage> {
+                self.handle.messages_mut()
+            }
+        }
+    };
+}
+
+pub(crate) use impl_yielded_methods;
+
+/// Converts an [`IterationOutcome`] into a `TurnResult`-like enum.
+///
+/// Both `TurnResult` and `OwnedTurnResult` need identical destructuring
+/// of `IterationOutcome` into their respective `Yielded`/`Completed`/`Error`
+/// variants. This macro generates that conversion.
+macro_rules! outcome_to_turn_result {
+    ($outcome:expr, $handle:expr, $turn_ty:ident, $yielded_ty:ident) => {
+        match $outcome {
+            IterationOutcome::ToolsExecuted {
+                tool_calls,
+                results,
+                assistant_content,
+                iteration,
+                total_usage,
+            } => $turn_ty::Yielded($yielded_ty {
+                handle: $handle,
+                tool_calls,
+                results,
+                assistant_content,
+                iteration,
+                total_usage,
+            }),
+            IterationOutcome::Completed(CompletedData {
+                response,
+                termination_reason,
+                iterations,
+                total_usage,
+            }) => $turn_ty::Completed(Completed {
+                response,
+                termination_reason,
+                iterations,
+                total_usage,
+            }),
+            IterationOutcome::Error(ErrorData {
+                error,
+                iterations,
+                total_usage,
+            }) => $turn_ty::Error(TurnError {
+                error,
+                iterations,
+                total_usage,
+            }),
+        }
+    };
+}
+
+pub(crate) use outcome_to_turn_result;
+
 /// Result of one turn of the tool loop.
 ///
 /// Match on this to determine what happened and what you can do next.
@@ -123,54 +236,7 @@ pub struct Yielded<'a, 'h, Ctx: LoopDepth + Send + Sync + 'static> {
     pub total_usage: Usage,
 }
 
-impl<Ctx: LoopDepth + Send + Sync + 'static> Yielded<'_, '_, Ctx> {
-    /// Continue with the given command.
-    pub fn resume(self, command: LoopCommand) {
-        self.handle.resume(command);
-    }
-
-    /// Convenience: continue to the next LLM iteration with no injected messages.
-    pub fn continue_loop(self) {
-        self.resume(LoopCommand::Continue);
-    }
-
-    /// Convenience: inject messages and continue.
-    pub fn inject_and_continue(self, messages: Vec<ChatMessage>) {
-        self.resume(LoopCommand::InjectMessages(messages));
-    }
-
-    /// Convenience: stop the loop.
-    pub fn stop(self, reason: Option<String>) {
-        self.resume(LoopCommand::Stop(reason));
-    }
-
-    /// Extract text from `assistant_content` blocks.
-    ///
-    /// Returns the LLM's "thinking aloud" text emitted alongside tool calls,
-    /// or `None` if there were no text blocks.
-    pub fn assistant_text(&self) -> Option<String> {
-        let text: String = self
-            .assistant_content
-            .iter()
-            .filter_map(|block| match block {
-                ContentBlock::Text(t) => Some(t.as_str()),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        if text.is_empty() { None } else { Some(text) }
-    }
-
-    /// Access the full message history (read-only).
-    pub fn messages(&self) -> &[ChatMessage] {
-        self.handle.messages()
-    }
-
-    /// Access the full message history (mutable, for context compaction).
-    pub fn messages_mut(&mut self) -> &mut Vec<ChatMessage> {
-        self.handle.messages_mut()
-    }
-}
+impl_yielded_methods!(Yielded<'a, 'h>);
 
 /// Terminal: the loop completed successfully.
 pub struct Completed {
@@ -285,7 +351,7 @@ impl<'a, Ctx: LoopDepth + Send + Sync + 'static> ToolLoopHandle<'a, Ctx> {
     /// terminal result.
     pub async fn next_turn(&mut self) -> TurnResult<'a, '_, Ctx> {
         let outcome = self.core.do_iteration(self.provider, self.registry).await;
-        outcome_to_turn_result(outcome, self)
+        outcome_to_turn_result!(outcome, self, TurnResult, Yielded)
     }
 
     /// Tell the loop how to proceed before the next [`next_turn()`](Self::next_turn) call.
@@ -361,50 +427,5 @@ impl<Ctx: LoopDepth + Send + Sync + 'static> std::fmt::Debug for ToolLoopHandle<
         f.debug_struct("ToolLoopHandle")
             .field("core", &self.core)
             .finish_non_exhaustive()
-    }
-}
-
-// ── Helpers ─────────────────────────────────────────────────────────
-
-/// Convert an `IterationOutcome` into a `TurnResult` for `ToolLoopHandle`.
-fn outcome_to_turn_result<'a, 'h, Ctx: LoopDepth + Send + Sync + 'static>(
-    outcome: IterationOutcome,
-    handle: &'h mut ToolLoopHandle<'a, Ctx>,
-) -> TurnResult<'a, 'h, Ctx> {
-    match outcome {
-        IterationOutcome::ToolsExecuted {
-            tool_calls,
-            results,
-            assistant_content,
-            iteration,
-            total_usage,
-        } => TurnResult::Yielded(Yielded {
-            handle,
-            tool_calls,
-            results,
-            assistant_content,
-            iteration,
-            total_usage,
-        }),
-        IterationOutcome::Completed(CompletedData {
-            response,
-            termination_reason,
-            iterations,
-            total_usage,
-        }) => TurnResult::Completed(Completed {
-            response,
-            termination_reason,
-            iterations,
-            total_usage,
-        }),
-        IterationOutcome::Error(ErrorData {
-            error,
-            iterations,
-            total_usage,
-        }) => TurnResult::Error(TurnError {
-            error,
-            iterations,
-            total_usage,
-        }),
     }
 }

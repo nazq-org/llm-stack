@@ -45,6 +45,11 @@ impl LoopDetectionState {
     }
 
     /// Update state with tool call references (more efficient when refs are already available).
+    ///
+    /// Returns `Some((tool_name, count))` each time `consecutive_count` reaches
+    /// a multiple of `threshold`. This means warnings fire repeatedly at
+    /// `threshold`, `2 * threshold`, `3 * threshold`, etc., preventing infinite
+    /// loops when the agent ignores the first warning.
     pub(crate) fn update_refs(
         &mut self,
         calls: &[&ToolCall],
@@ -55,7 +60,7 @@ impl LoopDetectionState {
 
         if self.last_hash == Some(hash) {
             self.consecutive_count += 1;
-            if self.consecutive_count >= threshold {
+            if self.consecutive_count >= threshold && self.consecutive_count % threshold == 0 {
                 return Some((self.last_tool_name.clone(), self.consecutive_count));
             }
         } else {
@@ -66,7 +71,8 @@ impl LoopDetectionState {
         None
     }
 
-    /// Reset the detection state (e.g., after injecting a warning).
+    /// Reset the detection state (called when call pattern changes).
+    #[cfg(test)]
     pub(crate) fn reset(&mut self) {
         self.last_hash = None;
         self.last_tool_name.clear();
@@ -247,7 +253,8 @@ pub(crate) fn handle_loop_detection(
         }),
         LoopCheckResult::InjectWarning { tool_name, count } => {
             messages.push(create_loop_warning_message(&tool_name, count));
-            state.reset();
+            // Don't reset — counter keeps incrementing so warnings repeat
+            // at every multiple of threshold until the agent changes approach.
             None
         }
     }
