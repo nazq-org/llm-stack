@@ -246,49 +246,8 @@ impl<Ctx: Send + Sync + 'static> ToolRegistry<Ctx> {
     /// Returns a [`ToolResult`] (always succeeds at the outer level).
     /// Execution errors are captured in `ToolResult::is_error`.
     pub async fn execute(&self, call: &ToolCall, ctx: &Ctx) -> ToolResult {
-        let Some(handler) = self.handlers.get(&call.name) else {
-            return ToolResult {
-                tool_call_id: call.id.clone(),
-                content: format!("Unknown tool: {}", call.name),
-                is_error: true,
-            };
-        };
-
-        // Validate arguments against schema
-        #[cfg(feature = "schema")]
-        {
-            let definition = handler.definition();
-            if let Err(e) = definition.parameters.validate(&call.arguments) {
-                return ToolResult {
-                    tool_call_id: call.id.clone(),
-                    content: format!("Invalid arguments for tool '{}': {e}", call.name),
-                    is_error: true,
-                };
-            }
-        }
-
-        // Create the request for interceptors
-        let request = ToolRequest {
-            name: call.name.clone(),
-            call_id: call.id.clone(),
-            arguments: call.arguments.clone(),
-        };
-
-        // Create the operation that executes the handler
-        let operation = ToolHandlerOperation {
-            handler: handler.clone(),
-            ctx,
-            retry_config: handler.definition().retry,
-        };
-
-        // Execute through interceptor stack
-        let response = self.interceptors.execute(&request, &operation).await;
-
-        ToolResult {
-            tool_call_id: call.id.clone(),
-            content: response.content,
-            is_error: response.is_error,
-        }
+        self.execute_inner(&call.name, &call.id, call.arguments.clone(), ctx)
+            .await
     }
 
     /// Executes a tool by name with the given arguments.
@@ -297,6 +256,17 @@ impl<Ctx: Send + Sync + 'static> ToolRegistry<Ctx> {
     /// components are already separated (e.g., from `execute_with_events`).
     /// Accepts owned arguments to avoid an extra deep clone of `serde_json::Value`.
     pub(crate) async fn execute_by_name(
+        &self,
+        name: &str,
+        call_id: &str,
+        arguments: serde_json::Value,
+        ctx: &Ctx,
+    ) -> ToolResult {
+        self.execute_inner(name, call_id, arguments, ctx).await
+    }
+
+    /// Shared implementation for `execute` and `execute_by_name`.
+    async fn execute_inner(
         &self,
         name: &str,
         call_id: &str,
@@ -324,7 +294,6 @@ impl<Ctx: Send + Sync + 'static> ToolRegistry<Ctx> {
             }
         }
 
-        // Build ToolRequest directly — moves owned arguments, no deep clone
         let request = ToolRequest {
             name: name.to_string(),
             call_id: call_id.to_string(),

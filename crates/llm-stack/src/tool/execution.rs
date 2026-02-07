@@ -19,8 +19,12 @@ pub(crate) struct ExecutionResult {
 ///
 /// Accepts owned `Vec<ToolCall>` to avoid deep-cloning `serde_json::Value`
 /// arguments. Uses streams for unified parallel/sequential execution:
-/// - Parallel: `buffer_unordered` for concurrent execution
-/// - Sequential: `then` for ordered execution
+/// - Parallel: `buffer_unordered` for concurrent execution (completion order)
+/// - Sequential: `then` for ordered execution (call order)
+///
+/// **Event ordering**: When `parallel` is true, `ToolExecutionStart`/`End`
+/// event pairs are emitted in completion order, not call order. Use
+/// `call_id` to correlate events across parallel calls.
 pub(crate) async fn execute_with_events<Ctx: Send + Sync + 'static>(
     registry: &ToolRegistry<Ctx>,
     calls: Vec<ToolCall>,

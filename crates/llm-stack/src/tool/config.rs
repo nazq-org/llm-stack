@@ -70,7 +70,7 @@ pub enum StopDecision {
 ///     action: LoopAction::InjectWarning,  // Tell the agent it's looping
 /// };
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct LoopDetectionConfig {
     /// Number of consecutive identical tool calls before triggering.
     ///
@@ -109,6 +109,10 @@ pub enum LoopAction {
     /// Adds a system message like "You have called {tool} with identical
     /// arguments {n} times. Try a different approach." This often helps
     /// the agent break out of the loop.
+    ///
+    /// The warning fires at every multiple of `threshold` (3, 6, 9, …)
+    /// until the agent changes its approach. This prevents infinite loops
+    /// where the agent ignores the first warning.
     InjectWarning,
 }
 
@@ -206,6 +210,10 @@ pub enum LoopEvent {
     },
 
     /// About to execute a tool.
+    ///
+    /// When `parallel_tool_execution` is true, events arrive in **completion
+    /// order** (whichever tool finishes first), not the order the LLM listed
+    /// the calls. Use `call_id` to correlate start/end pairs.
     ToolExecutionStart {
         /// The tool call ID from the LLM.
         call_id: String,
@@ -216,6 +224,10 @@ pub enum LoopEvent {
     },
 
     /// Tool execution completed.
+    ///
+    /// When `parallel_tool_execution` is true, events arrive in **completion
+    /// order**. Use `call_id` to correlate with the corresponding
+    /// [`ToolExecutionStart`](Self::ToolExecutionStart).
     ToolExecutionEnd {
         /// The tool call ID from the LLM.
         call_id: String,
@@ -256,8 +268,20 @@ pub struct ToolLoopConfig {
     pub parallel_tool_execution: bool,
     /// Optional callback to approve, deny, or modify each tool call
     /// before execution.
+    ///
+    /// Called once per tool call in the LLM response, **after** the response
+    /// is assembled but **before** any tool is executed. Receives the
+    /// [`ToolCall`](crate::chat::ToolCall) as parsed from the LLM output.
+    /// Modified arguments are re-validated against the tool's schema.
+    ///
+    /// Panics in the callback propagate and terminate the loop.
     pub on_tool_call: Option<ToolApprovalFn>,
     /// Optional stop condition checked after each LLM response.
+    ///
+    /// Called **after** the LLM response is received but **before** tools
+    /// are executed. If the callback returns [`StopDecision::Stop`] or
+    /// [`StopDecision::StopWithReason`], the loop terminates immediately
+    /// without executing the requested tool calls.
     ///
     /// Receives a [`StopContext`] with information about the current
     /// iteration and returns a [`StopDecision`]. Use this to implement:
@@ -349,6 +373,20 @@ pub struct ToolLoopConfig {
     /// };
     /// ```
     pub max_depth: Option<u32>,
+}
+
+impl Clone for ToolLoopConfig {
+    fn clone(&self) -> Self {
+        Self {
+            max_iterations: self.max_iterations,
+            parallel_tool_execution: self.parallel_tool_execution,
+            on_tool_call: self.on_tool_call.clone(),
+            stop_when: self.stop_when.clone(),
+            loop_detection: self.loop_detection,
+            timeout: self.timeout,
+            max_depth: self.max_depth,
+        }
+    }
 }
 
 impl Default for ToolLoopConfig {

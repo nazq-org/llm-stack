@@ -389,8 +389,21 @@ impl<Ctx: LoopDepth + Send + Sync + 'static> LoopCore<Ctx> {
     ) -> IterationOutcome {
         let (calls, other_content) = response.partition_content();
 
-        // Clone calls for the outcome return; originals move into approval/execution
-        let event_calls = calls.clone();
+        // Clone calls once: we need them for the outcome AND the approval pipeline.
+        // The assistant message is built from refs to avoid a second clone.
+        let outcome_calls = calls.clone();
+
+        // Build the assistant message with text + tool-call blocks.
+        // Anthropic (and others) require tool_use blocks in the assistant message
+        // so that subsequent tool_result messages can reference them by ID.
+        let mut msg_content = other_content.clone();
+        msg_content.extend(calls.iter().map(|c| ContentBlock::ToolCall(c.clone())));
+        self.params.messages.push(ChatMessage {
+            role: crate::chat::ChatRole::Assistant,
+            content: msg_content,
+        });
+
+        // Approve and execute tools (consumes owned calls)
         let (approved_calls, denied_results) = approve_calls(calls, &self.config);
         let exec_result = execute_with_events(
             registry,
@@ -401,24 +414,11 @@ impl<Ctx: LoopDepth + Send + Sync + 'static> LoopCore<Ctx> {
         )
         .await;
 
-        // Collect events from tool execution
         self.events.extend(exec_result.events);
 
         let results = exec_result.results;
         self.tool_calls_executed += results.len();
         self.last_tool_results.clone_from(&results);
-
-        // Append assistant message with both text and tool-call blocks.
-        // Anthropic (and others) require tool_use blocks in the assistant message
-        // so that subsequent tool_result messages can reference them by ID.
-        let mut assistant_content = other_content.clone();
-        for call in &event_calls {
-            assistant_content.push(ContentBlock::ToolCall(call.clone()));
-        }
-        self.params.messages.push(ChatMessage {
-            role: crate::chat::ChatRole::Assistant,
-            content: assistant_content,
-        });
 
         // Append tool results to conversation
         for result in &results {
@@ -427,15 +427,12 @@ impl<Ctx: LoopDepth + Send + Sync + 'static> LoopCore<Ctx> {
                 .push(ChatMessage::tool_result_full(result.clone()));
         }
 
-        let iteration = self.iterations;
-        let total_usage = self.total_usage.clone();
-
         IterationOutcome::ToolsExecuted {
-            tool_calls: event_calls,
+            tool_calls: outcome_calls,
             results,
             assistant_content: other_content,
-            iteration,
-            total_usage,
+            iteration: self.iterations,
+            total_usage: self.total_usage.clone(),
         }
     }
 
@@ -450,10 +447,11 @@ impl<Ctx: LoopDepth + Send + Sync + 'static> LoopCore<Ctx> {
         termination_reason: TerminationReason,
     ) -> IterationOutcome {
         self.finished = true;
+        let usage = self.total_usage.clone();
         let result = ToolLoopResult {
             response: response.clone(),
             iterations: self.iterations,
-            total_usage: self.total_usage.clone(),
+            total_usage: usage.clone(),
             termination_reason: termination_reason.clone(),
         };
         self.final_result = Some(result.clone());
@@ -463,23 +461,24 @@ impl<Ctx: LoopDepth + Send + Sync + 'static> LoopCore<Ctx> {
             response,
             termination_reason,
             iterations: self.iterations,
-            total_usage: self.total_usage.clone(),
+            total_usage: usage,
         })
     }
 
     /// Mark the loop as finished and return an `Error` outcome.
     pub(crate) fn finish_error(&mut self, error: LlmError) -> IterationOutcome {
         self.finished = true;
+        let usage = self.total_usage.clone();
         self.final_result = Some(ToolLoopResult {
             response: ChatResponse::empty(),
             iterations: self.iterations,
-            total_usage: self.total_usage.clone(),
+            total_usage: usage.clone(),
             termination_reason: TerminationReason::Complete,
         });
         IterationOutcome::Error(ErrorData {
             error,
             iterations: self.iterations,
-            total_usage: self.total_usage.clone(),
+            total_usage: usage,
         })
     }
 

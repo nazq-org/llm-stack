@@ -10,6 +10,7 @@
 //! `ToolExecutionStart` and `ToolExecutionEnd` events. No LLM deltas
 //! are emitted during this phase.
 
+use std::collections::VecDeque;
 use std::sync::Arc;
 
 use futures::StreamExt;
@@ -59,13 +60,13 @@ pub fn tool_loop_stream<Ctx: LoopDepth + Send + Sync + 'static>(
         current_text: String::new(),
         current_tool_calls: Vec::new(),
         current_usage: Usage::default(),
-        pending_events: Vec::new(),
+        pending_events: VecDeque::new(),
     };
 
     let stream = futures::stream::unfold(state, |mut state| async move {
         loop {
             // First, drain any pending events (from LoopCore's event buffer)
-            if let Some(event) = state.pending_events.pop() {
+            if let Some(event) = state.pending_events.pop_front() {
                 return Some((event, state));
             }
 
@@ -88,7 +89,7 @@ pub fn tool_loop_stream<Ctx: LoopDepth + Send + Sync + 'static>(
                             if let Some(event) = outcome_to_error(*outcome) {
                                 state.phase = StreamPhase::Done;
                                 // Push error, then let pending_events drain
-                                state.pending_events.push(event);
+                                state.pending_events.push_back(event);
                             }
                             // Continue loop to drain pending_events
                         }
@@ -155,7 +156,7 @@ pub fn tool_loop_stream<Ctx: LoopDepth + Send + Sync + 'static>(
                         }
                         IterationOutcome::Error(data) => {
                             state.phase = StreamPhase::Done;
-                            state.pending_events.push(Err(data.error));
+                            state.pending_events.push_back(Err(data.error));
                         }
                     }
                     // Continue loop to drain pending_events
@@ -184,20 +185,15 @@ struct UnfoldState<Ctx: LoopDepth + Send + Sync + 'static> {
     current_text: String,
     current_tool_calls: Vec<ToolCall>,
     current_usage: Usage,
-    /// Events waiting to be yielded. Popped from the back (LIFO)
-    /// so we reverse when loading from core.
-    pending_events: Vec<Result<LoopEvent, LlmError>>,
+    /// Events waiting to be yielded (FIFO).
+    pending_events: VecDeque<Result<LoopEvent, LlmError>>,
 }
 
 impl<Ctx: LoopDepth + Send + Sync + 'static> UnfoldState<Ctx> {
-    /// Drain events from `LoopCore`'s buffer into our pending queue.
-    ///
-    /// Events are reversed so we can `pop()` from the back in FIFO order.
+    /// Drain events from `LoopCore`'s buffer into our pending queue (FIFO).
     fn load_core_events(&mut self) {
-        let events = self.core.drain_events();
-        // Reverse so pop() yields in original order
-        for event in events.into_iter().rev() {
-            self.pending_events.push(Ok(event));
+        for event in self.core.drain_events() {
+            self.pending_events.push_back(Ok(event));
         }
     }
 }

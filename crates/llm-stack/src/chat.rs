@@ -292,6 +292,12 @@ pub struct ToolCall {
     pub arguments: Value,
 }
 
+impl std::fmt::Display for ToolCall {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}({})", self.name, self.id)
+    }
+}
+
 /// The result of executing a tool, returned to the model.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ToolResult {
@@ -301,6 +307,16 @@ pub struct ToolResult {
     pub content: String,
     /// Whether the tool invocation failed.
     pub is_error: bool,
+}
+
+impl std::fmt::Display for ToolResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.is_error {
+            write!(f, "err:{} ({})", self.tool_call_id, self.content)
+        } else {
+            write!(f, "ok:{}", self.tool_call_id)
+        }
+    }
 }
 
 /// A complete response from a model.
@@ -319,7 +335,10 @@ pub struct ChatResponse {
     /// The model identifier that actually served the request (may differ
     /// from the requested model if the provider performed routing).
     pub model: String,
-    /// Provider-specific metadata (e.g. request IDs, cache info).
+    /// Provider-specific metadata (e.g., request IDs, cache info).
+    ///
+    /// Contents are provider-specific. See each provider crate's docs for
+    /// the keys it populates. Common keys include `"request_id"`.
     pub metadata: HashMap<String, Value>,
 }
 

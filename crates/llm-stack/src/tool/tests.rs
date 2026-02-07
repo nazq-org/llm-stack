@@ -14,6 +14,20 @@ use crate::provider::{ChatParams, JsonSchema, ToolDefinition};
 use crate::test_helpers::{mock_for, sample_response, sample_tool_response};
 use crate::usage::Usage;
 
+// ── Compile-time Send + Sync assertions ─────────────────────────────
+#[test]
+fn key_types_are_send_and_sync() {
+    fn assert_send_sync<T: Send + Sync>() {}
+    assert_send_sync::<ToolRegistry<()>>();
+    assert_send_sync::<OwnedToolLoopHandle<()>>();
+    assert_send_sync::<LoopEvent>();
+    assert_send_sync::<ToolLoopResult>();
+    assert_send_sync::<ToolLoopConfig>();
+    assert_send_sync::<ToolOutput>();
+    assert_send_sync::<ToolError>();
+    assert_send_sync::<LoopDetectionConfig>();
+}
+
 fn number_schema() -> JsonSchema {
     JsonSchema::new(json!({
         "type": "object",
