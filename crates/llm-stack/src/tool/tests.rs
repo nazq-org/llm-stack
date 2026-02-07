@@ -3109,6 +3109,76 @@ async fn test_resumable_events_via_stream() {
     );
 }
 
+#[tokio::test]
+async fn test_resumable_drain_events() {
+    let mock = mock_for("test", "test-model");
+
+    mock.queue_response(sample_tool_response(vec![ToolCall {
+        id: "c1".into(),
+        name: "add".into(),
+        arguments: json!({"a": 2, "b": 3}),
+    }]));
+    mock.queue_response(sample_response("Done"));
+
+    let mut registry: ToolRegistry<()> = ToolRegistry::new();
+    registry.register(AddTool);
+
+    let params = ChatParams {
+        messages: vec![ChatMessage::user("Drain test")],
+        ..Default::default()
+    };
+
+    let mut handle = ToolLoopHandle::new(&mock, &registry, params, ToolLoopConfig::default(), &());
+
+    // First turn: tools executed → events buffered
+    match handle.next_turn().await {
+        TurnResult::Yielded(turn) => {
+            turn.continue_loop();
+        }
+        _ => panic!("expected Yielded"),
+    }
+
+    let events = handle.drain_events();
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, LoopEvent::IterationStart { .. })),
+        "should have IterationStart"
+    );
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, LoopEvent::ToolExecutionStart { .. })),
+        "should have ToolExecutionStart"
+    );
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, LoopEvent::ToolExecutionEnd { .. })),
+        "should have ToolExecutionEnd"
+    );
+
+    // Second drain should be empty
+    assert!(handle.drain_events().is_empty());
+
+    // Second turn: completion
+    match handle.next_turn().await {
+        TurnResult::Completed(done) => {
+            assert_eq!(done.response.text(), Some("Done"));
+        }
+        _ => panic!("expected Completed"),
+    }
+
+    // Completion also generates events (IterationStart at minimum)
+    let final_events = handle.drain_events();
+    assert!(
+        final_events
+            .iter()
+            .any(|e| matches!(e, LoopEvent::IterationStart { .. })),
+        "completion turn should have IterationStart"
+    );
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // OwnedToolLoopHandle Tests
 // ─────────────────────────────────────────────────────────────────────────────
