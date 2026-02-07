@@ -1,35 +1,21 @@
-//! Tool execution with event emission.
+//! Tool execution with event collection.
 
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use futures::{StreamExt, stream};
 
 use crate::chat::{ToolCall, ToolResult};
 
 use super::ToolRegistry;
-use super::config::{ToolLoopConfig, ToolLoopEvent};
-use super::loop_sync::emit_event;
+use super::config::LoopEvent;
 
-/// Emit end event for a tool execution.
-#[inline]
-fn emit_tool_end(
-    config: &ToolLoopConfig,
-    call_id: String,
-    tool_name: String,
-    result: &ToolResult,
-    duration: Duration,
-) {
-    if config.on_event.is_some() {
-        emit_event(config, || ToolLoopEvent::ToolExecutionEnd {
-            call_id,
-            tool_name,
-            result: result.clone(),
-            duration,
-        });
-    }
+/// Result of executing tool calls: the tool results plus any events generated.
+pub(crate) struct ExecutionResult {
+    pub results: Vec<ToolResult>,
+    pub events: Vec<LoopEvent>,
 }
 
-/// Execute tool calls with start/end events.
+/// Execute tool calls, collecting start/end events.
 ///
 /// Accepts owned `Vec<ToolCall>` to avoid deep-cloning `serde_json::Value`
 /// arguments. Uses streams for unified parallel/sequential execution:
@@ -40,15 +26,17 @@ pub(crate) async fn execute_with_events<Ctx: Send + Sync + 'static>(
     calls: Vec<ToolCall>,
     denied_results: Vec<ToolResult>,
     parallel: bool,
-    config: &ToolLoopConfig,
     ctx: &Ctx,
-) -> Vec<ToolResult> {
+) -> ExecutionResult {
     if calls.is_empty() {
-        return denied_results;
+        return ExecutionResult {
+            results: denied_results,
+            events: Vec::new(),
+        };
     }
 
-    let has_event_cb = config.on_event.is_some();
     let call_count = calls.len();
+    let mut events = Vec::with_capacity(call_count * 2);
 
     // Setup execution closure — moves owned ToolCall, no deep-clone of arguments
     let execute_one = |call: ToolCall| {
@@ -58,14 +46,11 @@ pub(crate) async fn execute_with_events<Ctx: Send + Sync + 'static>(
             arguments,
         } = call;
         async move {
-            // Emit start event (only clone arguments when callback is set)
-            if has_event_cb {
-                emit_event(config, || ToolLoopEvent::ToolExecutionStart {
-                    call_id: call_id.clone(),
-                    tool_name: tool_name.clone(),
-                    arguments: arguments.clone(),
-                });
-            }
+            let start_event = LoopEvent::ToolExecutionStart {
+                call_id: call_id.clone(),
+                tool_name: tool_name.clone(),
+                arguments: arguments.clone(),
+            };
 
             let start = Instant::now();
             let result = registry
@@ -73,14 +58,18 @@ pub(crate) async fn execute_with_events<Ctx: Send + Sync + 'static>(
                 .await;
             let duration = start.elapsed();
 
-            // Emit end event
-            emit_tool_end(config, call_id, tool_name, &result, duration);
-            result
+            let end_event = LoopEvent::ToolExecutionEnd {
+                call_id,
+                tool_name,
+                result: result.clone(),
+                duration,
+            };
+            (result, start_event, end_event)
         }
     };
 
     // Execute calls in parallel or sequentially
-    let mut results: Vec<ToolResult> = if parallel && call_count > 1 {
+    let outcomes: Vec<(ToolResult, LoopEvent, LoopEvent)> = if parallel && call_count > 1 {
         stream::iter(calls)
             .map(execute_one)
             .buffer_unordered(call_count)
@@ -90,6 +79,13 @@ pub(crate) async fn execute_with_events<Ctx: Send + Sync + 'static>(
         stream::iter(calls).then(execute_one).collect().await
     };
 
+    let mut results = Vec::with_capacity(outcomes.len() + denied_results.len());
+    for (result, start_event, end_event) in outcomes {
+        events.push(start_event);
+        events.push(end_event);
+        results.push(result);
+    }
+
     results.extend(denied_results);
-    results
+    ExecutionResult { results, events }
 }

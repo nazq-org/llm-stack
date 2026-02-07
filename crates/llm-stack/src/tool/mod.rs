@@ -12,9 +12,10 @@
 //!       │
 //!   ToolRegistry       — stores handlers by name, validates & dispatches
 //!       │
-//!   tool_loop()        — automates generate → execute → feedback cycle
-//!   tool_loop_stream() — streaming variant
-//!   ToolLoopHandle     — caller-driven resumable variant
+//!   tool_loop()           — automates generate → execute → feedback cycle
+//!   tool_loop_stream()    — unified LoopEvent stream (LLM deltas + loop lifecycle)
+//!   ToolLoopHandle        — caller-driven resumable variant (borrowed refs)
+//!   OwnedToolLoopHandle   — caller-driven resumable variant (Arc, Send + 'static)
 //! ```
 //!
 //! # Example
@@ -65,28 +66,19 @@
 //! or configuration. Use [`tool_fn_with_ctx`] to create tools that receive context:
 //!
 //! ```rust,no_run
-//! use llm_stack::tool::{tool_fn_with_ctx, ToolRegistry, ToolError, ToolOutput, tool_loop, ToolLoopConfig, LoopDepth};
+//! use llm_stack::tool::{tool_fn_with_ctx, ToolRegistry, ToolError, ToolOutput, tool_loop, ToolLoopConfig, LoopContext};
 //! use llm_stack::{ToolDefinition, JsonSchema, ChatParams, ChatMessage};
 //! use serde_json::{json, Value};
 //!
-//! // Your application context - must implement Clone for LoopDepth
 //! #[derive(Clone)]
-//! struct AppContext {
+//! struct AppState {
 //!     user_id: String,
 //!     api_key: String,
-//!     depth: u32,
 //! }
 //!
-//! // Implement LoopDepth for automatic depth tracking in nested loops
-//! impl LoopDepth for AppContext {
-//!     fn loop_depth(&self) -> u32 { self.depth }
-//!     fn with_depth(&self, depth: u32) -> Self {
-//!         Self { depth, ..self.clone() }
-//!     }
-//! }
+//! type AppCtx = LoopContext<AppState>;
 //!
 //! # async fn example(provider: &dyn llm_stack::DynProvider) -> Result<(), llm_stack::LlmError> {
-//! // Create a tool that uses context
 //! let handler = tool_fn_with_ctx(
 //!     ToolDefinition {
 //!         name: "get_user_data".into(),
@@ -94,26 +86,22 @@
 //!         parameters: JsonSchema::new(json!({"type": "object"})),
 //!         retry: None,
 //!     },
-//!     |_input: Value, ctx: &AppContext| {
+//!     |_input: Value, ctx: &AppCtx| {
 //!         // Clone data from context before the async block
-//!         let user_id = ctx.user_id.clone();
+//!         let user_id = ctx.state.user_id.clone();
 //!         async move {
-//!             // Use the cloned data in the async block
 //!             Ok(ToolOutput::new(format!("Data for user: {}", user_id)))
 //!         }
 //!     },
 //! );
 //!
-//! // Register with a typed registry
-//! let mut registry: ToolRegistry<AppContext> = ToolRegistry::new();
+//! let mut registry: ToolRegistry<AppCtx> = ToolRegistry::new();
 //! registry.register(handler);
 //!
-//! // Create context and run
-//! let ctx = AppContext {
+//! let ctx = LoopContext::new(AppState {
 //!     user_id: "user123".into(),
 //!     api_key: "secret".into(),
-//!     depth: 0,
-//! };
+//! });
 //!
 //! let params = ChatParams {
 //!     messages: vec![ChatMessage::user("Get my data")],
@@ -138,8 +126,9 @@ mod error;
 mod execution;
 mod handler;
 mod helpers;
-mod loop_channel;
+pub(crate) mod loop_core;
 mod loop_detection;
+mod loop_owned;
 mod loop_resumable;
 mod loop_stream;
 mod loop_sync;
@@ -148,17 +137,15 @@ mod registry;
 
 // Re-export all public types
 pub use config::{
-    LoopAction, LoopDetectionConfig, StopConditionFn, StopContext, StopDecision, TerminationReason,
-    ToolApproval, ToolApprovalFn, ToolLoopConfig, ToolLoopEvent, ToolLoopEventFn, ToolLoopResult,
+    LoopAction, LoopDetectionConfig, LoopEvent, LoopStream, StopConditionFn, StopContext,
+    StopDecision, TerminationReason, ToolApproval, ToolApprovalFn, ToolLoopConfig, ToolLoopResult,
 };
-pub use depth::LoopDepth;
+pub use depth::{LoopContext, LoopDepth};
 pub use error::ToolError;
 pub use handler::{FnToolHandler, NoCtxToolHandler, ToolHandler};
 pub use helpers::{tool_fn, tool_fn_with_ctx};
-pub use loop_channel::tool_loop_channel;
-pub use loop_resumable::{
-    Completed, LoopCommand, ToolLoopHandle, TurnError, TurnResult, Yielded, tool_loop_resumable,
-};
+pub use loop_owned::{OwnedToolLoopHandle, OwnedTurnResult, OwnedYielded};
+pub use loop_resumable::{Completed, LoopCommand, ToolLoopHandle, TurnError, TurnResult, Yielded};
 pub use loop_stream::tool_loop_stream;
 pub use loop_sync::tool_loop;
 pub use output::ToolOutput;

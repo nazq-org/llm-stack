@@ -130,13 +130,18 @@ src/
     handler.rs      ToolHandler trait, FnToolHandler, NoCtxToolHandler
     helpers.rs      tool_fn, tool_fn_with_ctx
     registry.rs     ToolRegistry (Clone, without, only), execute logic
-    config.rs       ToolLoopConfig (max_depth), ToolLoopEvent, TerminationReason
-    depth.rs        LoopDepth trait, blanket impl for ()
-    loop_sync.rs    tool_loop() with depth checking
-    loop_stream.rs  tool_loop_stream() with depth checking
-    loop_channel.rs tool_loop_channel() for backpressure
+    config.rs       ToolLoopConfig, LoopEvent, LoopStream, TerminationReason, ToolLoopResult
+    depth.rs        LoopDepth trait, LoopContext<T>, blanket impl for ()
+    loop_core.rs    LoopCore<Ctx> — streaming-first iteration engine (internal)
+                      start_iteration() → ChatStream, finish_iteration() → IterationOutcome
+                      do_iteration() composes both (collects stream internally)
+                      collect_stream() — ChatStream → ChatResponse helper
+                      drain_events() — buffered LoopEvents for stream consumers
+    loop_sync.rs    tool_loop() — thin wrapper over ToolLoopHandle
+    loop_stream.rs  tool_loop_stream() → LoopStream — unified event stream over LoopCore
     loop_resumable.rs ToolLoopHandle, TurnResult, Yielded, LoopCommand (caller-driven)
+    loop_owned.rs   OwnedToolLoopHandle (Arc, Send + 'static, for tokio::spawn)
     loop_detection.rs Loop detection logic
-    execution.rs    Tool execution with events
+    execution.rs    Tool execution, returns (results, events)
     approval.rs     ToolApproval handling
 ```
