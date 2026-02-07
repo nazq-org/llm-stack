@@ -49,6 +49,8 @@ pub async fn tool_loop<Ctx: LoopDepth + Send + Sync + 'static>(
                     iterations: done.iterations,
                     total_usage: done.total_usage,
                     termination_reason: done.termination_reason,
+                    // Events silently dropped — tool_loop is fire-and-forget.
+                    // Use ToolLoopHandle or tool_loop_stream for event access.
                 });
             }
             TurnResult::Error(err) => return Err(err.error),

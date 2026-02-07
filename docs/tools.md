@@ -391,7 +391,9 @@ let config = ToolLoopConfig {
 
 ### Observability
 
-All events — LLM streaming, tool execution, iteration boundaries — flow through `tool_loop_stream`'s unified `LoopEvent` stream. See [Streaming tool loops](#streaming-tool-loops) for the full example. No separate callbacks needed.
+All events — LLM streaming, tool execution, iteration boundaries — flow through `tool_loop_stream`'s unified `LoopEvent` stream. See [Streaming tool loops](#streaming-tool-loops) for the full example.
+
+For `ToolLoopHandle` and `OwnedToolLoopHandle`, lifecycle events (`IterationStart`, `ToolExecutionStart`, `ToolExecutionEnd`, etc.) are pre-drained into each `TurnResult` variant's `events` field — no separate callback or drain step needed.
 
 ## Streaming tool loops
 
@@ -461,8 +463,8 @@ let mut handle = ToolLoopHandle::new(
 loop {
     match handle.next_turn().await {
         TurnResult::Yielded(turn) => {
-            println!("Iteration {}: {} tools executed",
-                turn.iteration, turn.tool_calls.len());
+            println!("Iteration {}: {} tools executed, {} events",
+                turn.iteration, turn.tool_calls.len(), turn.events.len());
 
             // Text the LLM produced alongside tool calls is directly available
             if let Some(text) = turn.assistant_text() {
@@ -506,8 +508,10 @@ The `Yielded` variant borrows the handle mutably — you literally cannot call `
 | Variant | What happened | What to do |
 |---------|---------------|------------|
 | `Yielded(turn)` | Tools were executed | Consume via `continue_loop()`, `inject_and_continue()`, `stop()`, or `resume()` |
-| `Completed(done)` | Loop finished | Read `done.response`, `done.termination_reason` |
-| `Error(err)` | LLM call failed | Read `err.error` |
+| `Completed(done)` | Loop finished | Read `done.response`, `done.termination_reason`, `done.events` |
+| `Error(err)` | LLM call failed | Read `err.error`, `err.events` |
+
+All three variants carry an `events: Vec<LoopEvent>` field with lifecycle events from that turn (`IterationStart`, `ToolExecutionStart`, `ToolExecutionEnd`, etc.).
 
 ### Yielded — the interesting one
 
@@ -519,6 +523,7 @@ The `Yielded` variant borrows the handle mutably — you literally cannot call `
 - `turn.assistant_text()` — convenience to extract just the text
 - `turn.iteration` — which iteration this was
 - `turn.total_usage` — accumulated token usage
+- `turn.events` — lifecycle events from this turn (`IterationStart`, `ToolExecutionStart`, `ToolExecutionEnd`, etc.)
 - `turn.messages()` / `turn.messages_mut()` — full conversation history
 
 ### Injecting messages
@@ -560,6 +565,7 @@ The handle exposes loop state between iterations:
 - `handle.total_usage()` — accumulated token usage
 - `handle.iterations()` — current iteration count
 - `handle.is_finished()` — whether a terminal event was returned
+- `handle.drain_events()` — drain any events buffered between turns (edge case; most callers use `turn.events` instead)
 - `handle.into_result()` — consume handle into a `ToolLoopResult`
 
 All `ToolLoopConfig` options (max_iterations, timeout, stop_when, loop_detection, approval hooks) work identically to `tool_loop`.

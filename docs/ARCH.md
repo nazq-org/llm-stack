@@ -139,8 +139,9 @@ src/
                       drain_events() — buffered LoopEvents for stream consumers
     loop_sync.rs    tool_loop() — thin wrapper over ToolLoopHandle
     loop_stream.rs  tool_loop_stream() → LoopStream — unified event stream over LoopCore
-    loop_resumable.rs ToolLoopHandle, TurnResult, Yielded, LoopCommand (caller-driven)
-    loop_owned.rs   OwnedToolLoopHandle (Arc, Send + 'static, for tokio::spawn)
+    loop_resumable.rs ToolLoopHandle, TurnResult, Yielded, Completed, TurnError, LoopCommand
+                      All TurnResult variants carry events: Vec<LoopEvent>
+    loop_owned.rs   OwnedToolLoopHandle, OwnedTurnResult, OwnedYielded (Arc, Send + 'static)
     loop_detection.rs Loop detection logic
     execution.rs    Tool execution, returns (results, events)
     approval.rs     ToolApproval handling

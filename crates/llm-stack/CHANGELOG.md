@@ -15,6 +15,8 @@ All notable changes to this project will be documented in this file.
 ### Refactor
 
 - *(tool)* Post-review cleanup — dedup, correctness, and docs ([#17](https://github.com/nazq-org/llm-stack/pull/17))
+- *(tool)* Add `drain_events()` to resumable and owned handles ([#18](https://github.com/nazq-org/llm-stack/pull/18))
+- *(tool)* Embed lifecycle events in all `TurnResult` variants ([#19](https://github.com/nazq-org/llm-stack/pull/19))
 
 
 ## [0.3.0] - 2026-02-06
