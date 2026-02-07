@@ -110,6 +110,11 @@ pub struct OwnedYielded<'h, Ctx: LoopDepth + Send + Sync + 'static> {
 
     /// Accumulated usage across all iterations so far.
     pub total_usage: Usage,
+
+    /// Lifecycle events from this turn.
+    ///
+    /// See [`Yielded::events`](super::Yielded::events) for details.
+    pub events: Vec<LoopEvent>,
 }
 
 impl_yielded_methods!(OwnedYielded<'h>);
@@ -211,7 +216,7 @@ impl<Ctx: LoopDepth + Send + Sync + 'static> OwnedToolLoopHandle<Ctx> {
         self.core.is_finished()
     }
 
-    /// Drain buffered [`LoopEvent`]s from the most recent iteration.
+    /// Drain any remaining buffered [`LoopEvent`]s.
     ///
     /// See [`ToolLoopHandle::drain_events`](super::ToolLoopHandle::drain_events)
     /// for full documentation.

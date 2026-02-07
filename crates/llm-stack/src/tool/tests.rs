@@ -3130,53 +3130,51 @@ async fn test_resumable_drain_events() {
 
     let mut handle = ToolLoopHandle::new(&mock, &registry, params, ToolLoopConfig::default(), &());
 
-    // First turn: tools executed → events buffered
+    // First turn: tools executed → events pre-drained into Yielded
     match handle.next_turn().await {
         TurnResult::Yielded(turn) => {
+            assert!(
+                turn.events
+                    .iter()
+                    .any(|e| matches!(e, LoopEvent::IterationStart { .. })),
+                "should have IterationStart"
+            );
+            assert!(
+                turn.events
+                    .iter()
+                    .any(|e| matches!(e, LoopEvent::ToolExecutionStart { .. })),
+                "should have ToolExecutionStart"
+            );
+            assert!(
+                turn.events
+                    .iter()
+                    .any(|e| matches!(e, LoopEvent::ToolExecutionEnd { .. })),
+                "should have ToolExecutionEnd"
+            );
             turn.continue_loop();
         }
         _ => panic!("expected Yielded"),
     }
 
-    let events = handle.drain_events();
-    assert!(
-        events
-            .iter()
-            .any(|e| matches!(e, LoopEvent::IterationStart { .. })),
-        "should have IterationStart"
-    );
-    assert!(
-        events
-            .iter()
-            .any(|e| matches!(e, LoopEvent::ToolExecutionStart { .. })),
-        "should have ToolExecutionStart"
-    );
-    assert!(
-        events
-            .iter()
-            .any(|e| matches!(e, LoopEvent::ToolExecutionEnd { .. })),
-        "should have ToolExecutionEnd"
-    );
-
-    // Second drain should be empty
+    // Handle drain should be empty — events were pre-drained into the turn
     assert!(handle.drain_events().is_empty());
 
-    // Second turn: completion
+    // Second turn: completion → events pre-drained into Completed
     match handle.next_turn().await {
         TurnResult::Completed(done) => {
             assert_eq!(done.response.text(), Some("Done"));
+            assert!(
+                done.events
+                    .iter()
+                    .any(|e| matches!(e, LoopEvent::IterationStart { .. })),
+                "completion turn should have IterationStart"
+            );
         }
         _ => panic!("expected Completed"),
     }
 
-    // Completion also generates events (IterationStart at minimum)
-    let final_events = handle.drain_events();
-    assert!(
-        final_events
-            .iter()
-            .any(|e| matches!(e, LoopEvent::IterationStart { .. })),
-        "completion turn should have IterationStart"
-    );
+    // Handle drain empty after completion too
+    assert!(handle.drain_events().is_empty());
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

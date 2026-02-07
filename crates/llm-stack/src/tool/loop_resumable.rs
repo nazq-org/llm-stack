@@ -136,7 +136,11 @@ pub(crate) use impl_yielded_methods;
 /// of `IterationOutcome` into their respective `Yielded`/`Completed`/`Error`
 /// variants. This macro generates that conversion.
 macro_rules! outcome_to_turn_result {
-    ($outcome:expr, $handle:expr, $turn_ty:ident, $yielded_ty:ident) => {
+    ($outcome:expr, $handle:expr, $turn_ty:ident, $yielded_ty:ident) => {{
+        // Drain buffered events before constructing the result.
+        // This moves them into the turn variant so callers get events
+        // co-located with the turn data — no separate drain step needed.
+        let events = $handle.core.drain_events();
         match $outcome {
             IterationOutcome::ToolsExecuted {
                 tool_calls,
@@ -151,6 +155,7 @@ macro_rules! outcome_to_turn_result {
                 assistant_content,
                 iteration,
                 total_usage,
+                events,
             }),
             IterationOutcome::Completed(CompletedData {
                 response,
@@ -162,6 +167,7 @@ macro_rules! outcome_to_turn_result {
                 termination_reason,
                 iterations,
                 total_usage,
+                events,
             }),
             IterationOutcome::Error(ErrorData {
                 error,
@@ -171,9 +177,10 @@ macro_rules! outcome_to_turn_result {
                 error,
                 iterations,
                 total_usage,
+                events,
             }),
         }
-    };
+    }};
 }
 
 pub(crate) use outcome_to_turn_result;
@@ -234,6 +241,12 @@ pub struct Yielded<'a, 'h, Ctx: LoopDepth + Send + Sync + 'static> {
 
     /// Accumulated usage across all iterations so far.
     pub total_usage: Usage,
+
+    /// Lifecycle events from this turn (`IterationStart`, `ToolExecutionStart/End`, etc.).
+    ///
+    /// Pre-drained from the internal buffer — no need to call
+    /// [`ToolLoopHandle::drain_events()`] separately.
+    pub events: Vec<LoopEvent>,
 }
 
 impl_yielded_methods!(Yielded<'a, 'h>);
@@ -248,6 +261,8 @@ pub struct Completed {
     pub iterations: u32,
     /// Accumulated usage.
     pub total_usage: Usage,
+    /// Lifecycle events from the final turn.
+    pub events: Vec<LoopEvent>,
 }
 
 /// Terminal: the loop errored.
@@ -258,6 +273,9 @@ pub struct TurnError {
     pub iterations: u32,
     /// Usage accumulated before the error.
     pub total_usage: Usage,
+    /// Lifecycle events from the final turn (may include `IterationStart`
+    /// even though the turn errored).
+    pub events: Vec<LoopEvent>,
 }
 
 /// Commands sent by the caller to control the resumable loop.
@@ -400,15 +418,14 @@ impl<'a, Ctx: LoopDepth + Send + Sync + 'static> ToolLoopHandle<'a, Ctx> {
         self.core.is_finished()
     }
 
-    /// Drain buffered [`LoopEvent`]s from the most recent iteration.
+    /// Drain any remaining buffered [`LoopEvent`]s.
     ///
-    /// Each call to [`next_turn()`](Self::next_turn) generates lifecycle events
-    /// (`IterationStart`, `ToolExecutionStart`, `ToolExecutionEnd`, etc.) in an
-    /// internal buffer. Call this after `next_turn()` to retrieve them.
+    /// Most callers should use the `events` field on [`Yielded`], [`Completed`],
+    /// or [`TurnError`] instead — those are pre-populated by [`next_turn()`](Self::next_turn).
     ///
-    /// Returns an empty `Vec` if no events are buffered. Events are cleared
-    /// on each drain, so calling twice without an intervening `next_turn()`
-    /// returns empty on the second call.
+    /// This method exists for edge cases where events may accumulate between
+    /// turns (e.g., after calling [`resume()`](Self::resume) directly from an
+    /// external event loop).
     pub fn drain_events(&mut self) -> Vec<LoopEvent> {
         self.core.drain_events()
     }
