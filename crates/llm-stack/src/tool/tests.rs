@@ -636,13 +636,12 @@ async fn test_tool_loop_usage_accumulation() {
 
 #[tokio::test]
 async fn test_tool_loop_stream_no_tools() {
-    use crate::stream::StreamEvent;
     use futures::StreamExt;
 
     let mock = Arc::new(mock_for("test", "test-model"));
     mock.queue_stream(vec![
-        StreamEvent::TextDelta("Hello".into()),
-        StreamEvent::Done {
+        crate::stream::StreamEvent::TextDelta("Hello".into()),
+        crate::stream::StreamEvent::Done {
             stop_reason: StopReason::EndTurn,
         },
     ]);
@@ -667,35 +666,36 @@ async fn test_tool_loop_stream_no_tools() {
         .map(|r| r.unwrap())
         .collect();
 
-    assert_eq!(events.len(), 2);
-    assert!(matches!(&events[0], StreamEvent::TextDelta(t) if t == "Hello"));
-    assert!(matches!(
-        &events[1],
-        StreamEvent::Done {
-            stop_reason: StopReason::EndTurn
-        }
-    ));
+    // Should have: IterationStart, TextDelta, Usage, Done
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, LoopEvent::TextDelta(t) if t == "Hello"))
+    );
+    assert!(events.iter().any(|e| matches!(
+        e,
+        LoopEvent::Done(result) if result.termination_reason == TerminationReason::Complete
+    )));
 }
 
 #[tokio::test]
 async fn test_tool_loop_stream_one_iteration() {
-    use crate::stream::StreamEvent;
     use futures::StreamExt;
 
     let mock = Arc::new(mock_for("test", "test-model"));
 
     // First stream: tool call
     mock.queue_stream(vec![
-        StreamEvent::ToolCallStart {
+        crate::stream::StreamEvent::ToolCallStart {
             index: 0,
             id: "call_1".into(),
             name: "add".into(),
         },
-        StreamEvent::ToolCallDelta {
+        crate::stream::StreamEvent::ToolCallDelta {
             index: 0,
             json_chunk: r#"{"a":2,"b":3}"#.into(),
         },
-        StreamEvent::ToolCallComplete {
+        crate::stream::StreamEvent::ToolCallComplete {
             index: 0,
             call: ToolCall {
                 id: "call_1".into(),
@@ -703,15 +703,15 @@ async fn test_tool_loop_stream_one_iteration() {
                 arguments: json!({"a": 2, "b": 3}),
             },
         },
-        StreamEvent::Done {
+        crate::stream::StreamEvent::Done {
             stop_reason: StopReason::ToolUse,
         },
     ]);
 
     // Second stream: text response
     mock.queue_stream(vec![
-        StreamEvent::TextDelta("The answer is 5".into()),
-        StreamEvent::Done {
+        crate::stream::StreamEvent::TextDelta("The answer is 5".into()),
+        crate::stream::StreamEvent::Done {
             stop_reason: StopReason::EndTurn,
         },
     ]);
@@ -739,29 +739,26 @@ async fn test_tool_loop_stream_one_iteration() {
         .map(|r| r.unwrap())
         .collect();
 
-    // Should have: ToolCallStart, ToolCallDelta, ToolCallComplete from first stream
-    // (Done is swallowed for tool use), then TextDelta + Done from second stream
+    // Should have: IterationStart, ToolCallStart, ToolCallDelta, ToolCallComplete, Usage, ToolExecutionStart, ToolExecutionEnd
+    // then IterationStart, TextDelta, Usage, Done
     assert!(
         events
             .iter()
-            .any(|e| matches!(e, StreamEvent::ToolCallStart { .. }))
+            .any(|e| matches!(e, LoopEvent::ToolCallStart { .. }))
     );
     assert!(
         events
             .iter()
-            .any(|e| matches!(e, StreamEvent::TextDelta(t) if t == "The answer is 5"))
+            .any(|e| matches!(e, LoopEvent::TextDelta(t) if t == "The answer is 5"))
     );
     assert!(events.iter().any(|e| matches!(
         e,
-        StreamEvent::Done {
-            stop_reason: StopReason::EndTurn
-        }
+        LoopEvent::Done(result) if result.termination_reason == TerminationReason::Complete
     )));
 }
 
 #[tokio::test]
 async fn test_tool_loop_stream_max_iterations() {
-    use crate::stream::StreamEvent;
     use futures::StreamExt;
 
     let mock = Arc::new(mock_for("test", "test-model"));
@@ -769,7 +766,7 @@ async fn test_tool_loop_stream_max_iterations() {
     // Queue more tool-calling streams than the limit
     for _ in 0..5 {
         mock.queue_stream(vec![
-            StreamEvent::ToolCallComplete {
+            crate::stream::StreamEvent::ToolCallComplete {
                 index: 0,
                 call: ToolCall {
                     id: "c".into(),
@@ -777,7 +774,7 @@ async fn test_tool_loop_stream_max_iterations() {
                     arguments: json!({"a": 1, "b": 2}),
                 },
             },
-            StreamEvent::Done {
+            crate::stream::StreamEvent::Done {
                 stop_reason: StopReason::ToolUse,
             },
         ]);
@@ -799,8 +796,12 @@ async fn test_tool_loop_stream_max_iterations() {
     let stream = tool_loop_stream(mock, registry, params, config, Arc::new(()));
     let results: Vec<_> = stream.collect::<Vec<_>>().await;
 
-    // Should have an error
-    assert!(results.iter().any(Result::is_err));
+    // Should have a Done event with MaxIterations termination reason
+    let events: Vec<LoopEvent> = results.into_iter().filter_map(Result::ok).collect();
+    assert!(events.iter().any(|e| matches!(
+        e,
+        LoopEvent::Done(result) if matches!(result.termination_reason, TerminationReason::MaxIterations { limit: 2 })
+    )));
 }
 
 // ── Usage addition tests ────────────────────────────────────────
@@ -852,11 +853,11 @@ fn test_tool_result_full_message() {
     assert!(matches!(&msg.content[0], ContentBlock::ToolResult(r) if r.content == "42"));
 }
 
-// ── ToolLoopEvent tests ────────────────────────────────────────────
+// ── LoopEvent tests ────────────────────────────────────────────
 
 #[test]
-fn test_tool_loop_event_debug() {
-    let event = ToolLoopEvent::IterationStart {
+fn test_loop_event_debug() {
+    let event = LoopEvent::IterationStart {
         iteration: 1,
         message_count: 5,
     };
@@ -866,65 +867,48 @@ fn test_tool_loop_event_debug() {
 }
 
 #[test]
-fn test_tool_loop_event_clone() {
-    let event = ToolLoopEvent::ToolExecutionStart {
+fn test_loop_event_clone() {
+    let event = LoopEvent::ToolExecutionStart {
         call_id: "c1".into(),
         tool_name: "add".into(),
         arguments: json!({"a": 1}),
     };
     let cloned = event.clone();
     assert!(
-        matches!(cloned, ToolLoopEvent::ToolExecutionStart { tool_name, .. } if tool_name == "add")
+        matches!(cloned, LoopEvent::ToolExecutionStart { tool_name, .. } if tool_name == "add")
     );
 }
 
 #[tokio::test]
 async fn test_tool_loop_emits_iteration_start() {
-    use std::sync::Mutex;
+    use futures::StreamExt;
 
-    let mock = mock_for("test", "test-model");
+    let mock = Arc::new(mock_for("test", "test-model"));
     mock.queue_response(sample_response("Hello!"));
 
-    let events = Arc::new(Mutex::new(Vec::new()));
-    let events_clone = Arc::clone(&events);
-
-    let registry: ToolRegistry<()> = ToolRegistry::new();
+    let registry = Arc::new(ToolRegistry::<()>::new());
     let params = ChatParams {
         messages: vec![ChatMessage::user("Hi")],
         ..Default::default()
     };
-    let config = ToolLoopConfig {
-        on_event: Some(Arc::new(move |event| {
-            events_clone.lock().unwrap().push(event);
-        })),
-        ..Default::default()
-    };
+    let config = ToolLoopConfig::default();
 
-    let _result = tool_loop(&mock, &registry, params, config, &())
-        .await
-        .unwrap();
+    let stream = tool_loop_stream(mock, registry, params, config, Arc::new(()));
+    let results: Vec<Result<LoopEvent, _>> = stream.collect().await;
+    let events: Vec<LoopEvent> = results.into_iter().filter_map(Result::ok).collect();
 
-    let captured = events.lock().unwrap();
     assert!(
-        captured
+        events
             .iter()
-            .any(|e| matches!(e, ToolLoopEvent::IterationStart { iteration: 1, .. }))
+            .any(|e| matches!(e, LoopEvent::IterationStart { iteration: 1, .. }))
     );
-    assert!(captured.iter().any(|e| matches!(
-        e,
-        ToolLoopEvent::LlmResponseReceived {
-            iteration: 1,
-            has_tool_calls: false,
-            ..
-        }
-    )));
 }
 
 #[tokio::test]
 async fn test_tool_loop_emits_tool_execution_events() {
-    use std::sync::Mutex;
+    use futures::StreamExt;
 
-    let mock = mock_for("test", "test-model");
+    let mock = Arc::new(mock_for("test", "test-model"));
 
     // First call: model requests tool
     mock.queue_response(sample_tool_response(vec![ToolCall {
@@ -935,49 +919,39 @@ async fn test_tool_loop_emits_tool_execution_events() {
     // Second call: model returns text
     mock.queue_response(sample_response("The answer is 5"));
 
-    let events = Arc::new(Mutex::new(Vec::new()));
-    let events_clone = Arc::clone(&events);
-
     let mut registry: ToolRegistry<()> = ToolRegistry::new();
     registry.register(AddTool);
+    let registry = Arc::new(registry);
 
     let params = ChatParams {
         messages: vec![ChatMessage::user("What is 2 + 3?")],
         ..Default::default()
     };
-    let config = ToolLoopConfig {
-        on_event: Some(Arc::new(move |event| {
-            events_clone.lock().unwrap().push(event);
-        })),
-        ..Default::default()
-    };
+    let config = ToolLoopConfig::default();
 
-    let _result = tool_loop(&mock, &registry, params, config, &())
-        .await
-        .unwrap();
+    let stream = tool_loop_stream(mock, registry, params, config, Arc::new(()));
+    let results: Vec<Result<LoopEvent, _>> = stream.collect().await;
+    let events: Vec<LoopEvent> = results.into_iter().filter_map(Result::ok).collect();
 
-    let captured = events.lock().unwrap();
-
-    // Should have: IterationStart(1), LlmResponseReceived(1, has_tools=true),
-    // ToolExecutionStart, ToolExecutionEnd, IterationStart(2), LlmResponseReceived(2, has_tools=false)
-    assert!(captured.iter().any(
-        |e| matches!(e, ToolLoopEvent::ToolExecutionStart { tool_name, .. } if tool_name == "add")
+    // Should have: IterationStart(1), ToolExecutionStart, ToolExecutionEnd, IterationStart(2)
+    assert!(events.iter().any(
+        |e| matches!(e, LoopEvent::ToolExecutionStart { tool_name, .. } if tool_name == "add")
     ));
-    assert!(captured.iter().any(|e| matches!(e, ToolLoopEvent::ToolExecutionEnd { tool_name, result, .. } if tool_name == "add" && result.content == "5")));
+    assert!(events.iter().any(|e| matches!(e, LoopEvent::ToolExecutionEnd { tool_name, result, .. } if tool_name == "add" && result.content == "5")));
 
     // Check iteration count
-    let iteration_starts: Vec<_> = captured
+    let iteration_starts: Vec<_> = events
         .iter()
-        .filter(|e| matches!(e, ToolLoopEvent::IterationStart { .. }))
+        .filter(|e| matches!(e, LoopEvent::IterationStart { .. }))
         .collect();
     assert_eq!(iteration_starts.len(), 2);
 }
 
 #[tokio::test]
 async fn test_tool_loop_event_duration_is_positive() {
-    use std::sync::Mutex;
+    use futures::StreamExt;
 
-    let mock = mock_for("test", "test-model");
+    let mock = Arc::new(mock_for("test", "test-model"));
 
     mock.queue_response(sample_tool_response(vec![ToolCall {
         id: "call_1".into(),
@@ -986,34 +960,26 @@ async fn test_tool_loop_event_duration_is_positive() {
     }]));
     mock.queue_response(sample_response("Done"));
 
-    let events = Arc::new(Mutex::new(Vec::new()));
-    let events_clone = Arc::clone(&events);
-
     let mut registry: ToolRegistry<()> = ToolRegistry::new();
     registry.register(AddTool);
+    let registry = Arc::new(registry);
 
     let params = ChatParams {
         messages: vec![ChatMessage::user("Add")],
         ..Default::default()
     };
-    let config = ToolLoopConfig {
-        on_event: Some(Arc::new(move |event| {
-            events_clone.lock().unwrap().push(event);
-        })),
-        ..Default::default()
-    };
+    let config = ToolLoopConfig::default();
 
-    let _result = tool_loop(&mock, &registry, params, config, &())
-        .await
-        .unwrap();
+    let stream = tool_loop_stream(mock, registry, params, config, Arc::new(()));
+    let results: Vec<Result<LoopEvent, _>> = stream.collect().await;
+    let events: Vec<LoopEvent> = results.into_iter().filter_map(Result::ok).collect();
 
-    let captured = events.lock().unwrap();
-    let end_event = captured
+    let end_event = events
         .iter()
-        .find(|e| matches!(e, ToolLoopEvent::ToolExecutionEnd { .. }));
+        .find(|e| matches!(e, LoopEvent::ToolExecutionEnd { .. }));
     assert!(end_event.is_some());
 
-    if let Some(ToolLoopEvent::ToolExecutionEnd { duration, .. }) = end_event {
+    if let Some(LoopEvent::ToolExecutionEnd { duration, .. }) = end_event {
         // Duration should be non-negative (it's a Duration, always >= 0)
         assert!(*duration >= std::time::Duration::ZERO);
     }
@@ -1021,9 +987,9 @@ async fn test_tool_loop_event_duration_is_positive() {
 
 #[tokio::test]
 async fn test_tool_loop_events_with_parallel_execution() {
-    use std::sync::Mutex;
+    use futures::StreamExt;
 
-    let mock = mock_for("test", "test-model");
+    let mock = Arc::new(mock_for("test", "test-model"));
 
     mock.queue_response(sample_tool_response(vec![
         ToolCall {
@@ -1039,11 +1005,9 @@ async fn test_tool_loop_events_with_parallel_execution() {
     ]));
     mock.queue_response(sample_response("Both done"));
 
-    let events = Arc::new(Mutex::new(Vec::new()));
-    let events_clone = Arc::clone(&events);
-
     let mut registry: ToolRegistry<()> = ToolRegistry::new();
     registry.register(AddTool);
+    let registry = Arc::new(registry);
 
     let params = ChatParams {
         messages: vec![ChatMessage::user("Parallel")],
@@ -1051,26 +1015,21 @@ async fn test_tool_loop_events_with_parallel_execution() {
     };
     let config = ToolLoopConfig {
         parallel_tool_execution: true,
-        on_event: Some(Arc::new(move |event| {
-            events_clone.lock().unwrap().push(event);
-        })),
         ..Default::default()
     };
 
-    let _result = tool_loop(&mock, &registry, params, config, &())
-        .await
-        .unwrap();
-
-    let captured = events.lock().unwrap();
+    let stream = tool_loop_stream(mock, registry, params, config, Arc::new(()));
+    let results: Vec<Result<LoopEvent, _>> = stream.collect().await;
+    let events: Vec<LoopEvent> = results.into_iter().filter_map(Result::ok).collect();
 
     // Should have 2 start events and 2 end events
-    let starts: Vec<_> = captured
+    let starts: Vec<_> = events
         .iter()
-        .filter(|e| matches!(e, ToolLoopEvent::ToolExecutionStart { .. }))
+        .filter(|e| matches!(e, LoopEvent::ToolExecutionStart { .. }))
         .collect();
-    let ends: Vec<_> = captured
+    let ends: Vec<_> = events
         .iter()
-        .filter(|e| matches!(e, ToolLoopEvent::ToolExecutionEnd { .. }))
+        .filter(|e| matches!(e, LoopEvent::ToolExecutionEnd { .. }))
         .collect();
     assert_eq!(starts.len(), 2);
     assert_eq!(ends.len(), 2);
@@ -1078,24 +1037,22 @@ async fn test_tool_loop_events_with_parallel_execution() {
 
 #[tokio::test]
 async fn test_tool_loop_stream_emits_events() {
-    use crate::stream::StreamEvent;
     use futures::StreamExt;
-    use std::sync::Mutex;
 
     let mock = Arc::new(mock_for("test", "test-model"));
 
     // First stream: tool call
     mock.queue_stream(vec![
-        StreamEvent::ToolCallStart {
+        crate::stream::StreamEvent::ToolCallStart {
             index: 0,
             id: "call_1".into(),
             name: "add".into(),
         },
-        StreamEvent::ToolCallDelta {
+        crate::stream::StreamEvent::ToolCallDelta {
             index: 0,
             json_chunk: r#"{"a":2,"b":3}"#.into(),
         },
-        StreamEvent::ToolCallComplete {
+        crate::stream::StreamEvent::ToolCallComplete {
             index: 0,
             call: ToolCall {
                 id: "call_1".into(),
@@ -1103,21 +1060,18 @@ async fn test_tool_loop_stream_emits_events() {
                 arguments: json!({"a": 2, "b": 3}),
             },
         },
-        StreamEvent::Done {
+        crate::stream::StreamEvent::Done {
             stop_reason: StopReason::ToolUse,
         },
     ]);
 
     // Second stream: text response
     mock.queue_stream(vec![
-        StreamEvent::TextDelta("The answer is 5".into()),
-        StreamEvent::Done {
+        crate::stream::StreamEvent::TextDelta("The answer is 5".into()),
+        crate::stream::StreamEvent::Done {
             stop_reason: StopReason::EndTurn,
         },
     ]);
-
-    let events = Arc::new(Mutex::new(Vec::new()));
-    let events_clone = Arc::clone(&events);
 
     let mut registry: ToolRegistry<()> = ToolRegistry::new();
     registry.register(AddTool);
@@ -1127,56 +1081,35 @@ async fn test_tool_loop_stream_emits_events() {
         messages: vec![ChatMessage::user("What is 2+3?")],
         ..Default::default()
     };
-    let config = ToolLoopConfig {
-        on_event: Some(Arc::new(move |event| {
-            events_clone.lock().unwrap().push(event);
-        })),
-        ..Default::default()
-    };
+    let config = ToolLoopConfig::default();
 
     let stream = tool_loop_stream(mock, registry, params, config, Arc::new(()));
-    let _: Vec<_> = stream.collect::<Vec<_>>().await;
+    let results: Vec<Result<LoopEvent, _>> = stream.collect().await;
+    let events: Vec<LoopEvent> = results.into_iter().filter_map(Result::ok).collect();
 
-    let captured = events.lock().unwrap();
-
-    // Should have iteration starts, LLM response events, and tool execution events
+    // Should have iteration starts and tool execution events
     assert!(
-        captured
+        events
             .iter()
-            .any(|e| matches!(e, ToolLoopEvent::IterationStart { .. }))
+            .any(|e| matches!(e, LoopEvent::IterationStart { .. }))
     );
     assert!(
-        captured
+        events
             .iter()
-            .any(|e| matches!(e, ToolLoopEvent::LlmResponseReceived { .. }))
+            .any(|e| matches!(e, LoopEvent::ToolExecutionStart { .. }))
     );
     assert!(
-        captured
+        events
             .iter()
-            .any(|e| matches!(e, ToolLoopEvent::ToolExecutionStart { .. }))
-    );
-    assert!(
-        captured
-            .iter()
-            .any(|e| matches!(e, ToolLoopEvent::ToolExecutionEnd { .. }))
+            .any(|e| matches!(e, LoopEvent::ToolExecutionEnd { .. }))
     );
 }
 
 #[test]
-fn test_tool_loop_config_debug_with_event() {
-    let config = ToolLoopConfig {
-        on_event: Some(Arc::new(|_| {})),
-        ..Default::default()
-    };
-    let debug = format!("{config:?}");
-    assert!(debug.contains("has_on_event: true"));
-}
-
-#[test]
-fn test_tool_loop_config_debug_without_event() {
+fn test_tool_loop_config_debug() {
     let config = ToolLoopConfig::default();
     let debug = format!("{config:?}");
-    assert!(debug.contains("has_on_event: false"));
+    assert!(debug.contains("ToolLoopConfig"));
 }
 
 // ── Stop condition tests ─────────────────────────────────────────
@@ -1451,14 +1384,13 @@ async fn test_tool_loop_stop_on_specific_tool() {
 
 #[tokio::test]
 async fn test_tool_loop_stream_stop_early() {
-    use crate::stream::StreamEvent;
     use futures::StreamExt;
 
     let mock = Arc::new(mock_for("test", "test-model"));
 
     // First stream: tool call
     mock.queue_stream(vec![
-        StreamEvent::ToolCallComplete {
+        crate::stream::StreamEvent::ToolCallComplete {
             index: 0,
             call: ToolCall {
                 id: "call_1".into(),
@@ -1466,7 +1398,7 @@ async fn test_tool_loop_stream_stop_early() {
                 arguments: json!({"a": 2, "b": 3}),
             },
         },
-        StreamEvent::Done {
+        crate::stream::StreamEvent::Done {
             stop_reason: StopReason::ToolUse,
         },
     ]);
@@ -1492,24 +1424,19 @@ async fn test_tool_loop_stream_stop_early() {
     // Should have ToolCallComplete and Done, then stop
     assert!(events.iter().all(Result::is_ok));
     // Should have Done event
-    assert!(
-        events
-            .iter()
-            .any(|r| matches!(r, Ok(StreamEvent::Done { .. })))
-    );
+    assert!(events.iter().any(|r| matches!(r, Ok(LoopEvent::Done(_)))));
     // Should NOT have more iterations (no text delta from second iteration)
 }
 
 #[tokio::test]
 async fn test_tool_loop_stream_stop_after_tool_execution() {
-    use crate::stream::StreamEvent;
     use futures::StreamExt;
 
     let mock = Arc::new(mock_for("test", "test-model"));
 
     // First stream: tool call
     mock.queue_stream(vec![
-        StreamEvent::ToolCallComplete {
+        crate::stream::StreamEvent::ToolCallComplete {
             index: 0,
             call: ToolCall {
                 id: "call_1".into(),
@@ -1517,7 +1444,7 @@ async fn test_tool_loop_stream_stop_after_tool_execution() {
                 arguments: json!({"a": 2, "b": 3}),
             },
         },
-        StreamEvent::Done {
+        crate::stream::StreamEvent::Done {
             stop_reason: StopReason::ToolUse,
         },
     ]);
@@ -1526,16 +1453,16 @@ async fn test_tool_loop_stream_stop_after_tool_execution() {
     // Note: In streaming, text deltas are yielded before Done arrives,
     // so the text will appear even when we stop on Done.
     mock.queue_stream(vec![
-        StreamEvent::TextDelta("Final response".into()),
-        StreamEvent::Done {
+        crate::stream::StreamEvent::TextDelta("Final response".into()),
+        crate::stream::StreamEvent::Done {
             stop_reason: StopReason::EndTurn,
         },
     ]);
 
     // Third stream: should never be reached
     mock.queue_stream(vec![
-        StreamEvent::TextDelta("This should never appear".into()),
-        StreamEvent::Done {
+        crate::stream::StreamEvent::TextDelta("This should never appear".into()),
+        crate::stream::StreamEvent::Done {
             stop_reason: StopReason::EndTurn,
         },
     ]);
@@ -1564,23 +1491,23 @@ async fn test_tool_loop_stream_stop_after_tool_execution() {
     let stream = tool_loop_stream(mock, registry, params, config, Arc::new(()));
     let events: Vec<_> = stream.filter_map(|r| async { r.ok() }).collect().await;
 
-    // Should have 2 Done events (first iteration + second iteration that stops)
+    // Should have 1 Done event (the final termination)
     let done_count = events
         .iter()
-        .filter(|e| matches!(e, StreamEvent::Done { .. }))
+        .filter(|e| matches!(e, LoopEvent::Done(_)))
         .count();
-    assert_eq!(done_count, 2);
+    assert_eq!(done_count, 1);
 
     // The second iteration's text DOES appear (streamed before Done triggers stop)
     let has_final_response = events
         .iter()
-        .any(|e| matches!(e, StreamEvent::TextDelta(t) if t.contains("Final response")));
+        .any(|e| matches!(e, LoopEvent::TextDelta(t) if t.contains("Final response")));
     assert!(has_final_response);
 
     // But the third iteration should NOT be reached
     let has_third_iteration = events
         .iter()
-        .any(|e| matches!(e, StreamEvent::TextDelta(t) if t.contains("never appear")));
+        .any(|e| matches!(e, LoopEvent::TextDelta(t) if t.contains("never appear")));
     assert!(!has_third_iteration);
 }
 
@@ -1714,9 +1641,9 @@ fn test_tool_loop_config_debug_with_loop_detection() {
 
 #[tokio::test]
 async fn test_tool_loop_detects_loop_warn() {
-    use std::sync::Mutex;
+    use futures::StreamExt;
 
-    let mock = mock_for("test", "test-model");
+    let mock = Arc::new(mock_for("test", "test-model"));
 
     // Queue identical tool calls 3 times
     for _ in 0..3 {
@@ -1739,9 +1666,7 @@ async fn test_tool_loop_detects_loop_warn() {
         },
         |_| async { Ok(ToolOutput::new("result")) },
     ));
-
-    let events = Arc::new(Mutex::new(Vec::new()));
-    let events_clone = Arc::clone(&events);
+    let registry = Arc::new(registry);
 
     let params = ChatParams {
         messages: vec![ChatMessage::user("Search")],
@@ -1752,27 +1677,20 @@ async fn test_tool_loop_detects_loop_warn() {
             threshold: 3,
             action: LoopAction::Warn,
         }),
-        on_event: Some(Arc::new(move |event| {
-            events_clone.lock().unwrap().push(event);
-        })),
         ..Default::default()
     };
 
-    let result = tool_loop(&mock, &registry, params, config, &())
-        .await
-        .unwrap();
-
-    // Should complete (Warn doesn't stop)
-    assert_eq!(result.iterations, 4);
+    let stream = tool_loop_stream(mock, registry, params, config, Arc::new(()));
+    let results: Vec<Result<LoopEvent, _>> = stream.collect().await;
+    let events: Vec<LoopEvent> = results.into_iter().filter_map(Result::ok).collect();
 
     // Should have emitted LoopDetected event
-    let captured = events.lock().unwrap();
-    let loop_events: Vec<_> = captured
+    let loop_events: Vec<_> = events
         .iter()
-        .filter(|e| matches!(e, ToolLoopEvent::LoopDetected { .. }))
+        .filter(|e| matches!(e, LoopEvent::LoopDetected { .. }))
         .collect();
     assert_eq!(loop_events.len(), 1);
-    if let ToolLoopEvent::LoopDetected {
+    if let LoopEvent::LoopDetected {
         tool_name,
         consecutive_count,
         action,
@@ -1952,8 +1870,6 @@ async fn test_tool_loop_no_false_positive_different_args() {
 
 #[tokio::test]
 async fn test_tool_loop_stream_detects_loop_stop() {
-    use crate::error::LlmError;
-    use crate::stream::StreamEvent;
     use futures::StreamExt;
 
     let mock = Arc::new(mock_for("test", "test-model"));
@@ -1961,7 +1877,7 @@ async fn test_tool_loop_stream_detects_loop_stop() {
     // Queue identical streams
     for _ in 0..5 {
         mock.queue_stream(vec![
-            StreamEvent::ToolCallComplete {
+            crate::stream::StreamEvent::ToolCallComplete {
                 index: 0,
                 call: ToolCall {
                     id: "c".into(),
@@ -1969,7 +1885,7 @@ async fn test_tool_loop_stream_detects_loop_stop() {
                     arguments: json!({"query": "foo"}),
                 },
             },
-            StreamEvent::Done {
+            crate::stream::StreamEvent::Done {
                 stop_reason: StopReason::ToolUse,
             },
         ]);
@@ -2000,12 +1916,14 @@ async fn test_tool_loop_stream_detects_loop_stop() {
     };
 
     let stream = tool_loop_stream(mock, registry, params, config, Arc::new(()));
-    let events: Vec<_> = stream.collect::<Vec<_>>().await;
+    let results: Vec<_> = stream.collect::<Vec<_>>().await;
 
-    // Should have an error
-    assert!(events.iter().any(Result::is_err));
-    let err = events.iter().find(|r| r.is_err()).unwrap();
-    assert!(matches!(err, Err(LlmError::ToolExecution { .. })));
+    // Should have a Done event with LoopDetected termination reason
+    let events: Vec<LoopEvent> = results.into_iter().filter_map(Result::ok).collect();
+    assert!(events.iter().any(|e| matches!(
+        e,
+        LoopEvent::Done(result) if matches!(result.termination_reason, TerminationReason::LoopDetected { .. })
+    )));
 }
 
 #[test]
@@ -2265,21 +2183,17 @@ async fn test_tool_loop_stream_timeout() {
     };
 
     let ctx = Arc::new(());
-    let mut stream = tool_loop_stream(mock, registry, params, config, ctx);
+    let stream = tool_loop_stream(mock, registry, params, config, ctx);
 
-    // Collect events until we get an error (timeout)
-    let mut got_timeout_error = false;
-    while let Some(result) = stream.next().await {
-        // Should be a ToolExecution error mentioning timeout
-        if let Err(crate::error::LlmError::ToolExecution { source, .. }) = result {
-            if source.to_string().contains("timeout") {
-                got_timeout_error = true;
-                break;
-            }
-        }
-    }
+    // Collect all events - should terminate with Timeout
+    let results: Vec<_> = stream.collect::<Vec<_>>().await;
+    let events: Vec<LoopEvent> = results.into_iter().filter_map(Result::ok).collect();
 
-    assert!(got_timeout_error, "Expected timeout error in stream");
+    // Should have a Done event with Timeout termination reason
+    assert!(events.iter().any(|e| matches!(
+        e,
+        LoopEvent::Done(result) if matches!(result.termination_reason, TerminationReason::Timeout { .. })
+    )), "Expected Done event with Timeout termination reason");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2929,29 +2843,6 @@ async fn test_resumable_stop_condition_callback() {
 }
 
 #[tokio::test]
-async fn test_resumable_convenience_function() {
-    use super::loop_resumable::tool_loop_resumable;
-
-    let mock = mock_for("test", "test-model");
-    mock.queue_response(sample_response("Via convenience"));
-
-    let registry: ToolRegistry<()> = ToolRegistry::new();
-    let params = ChatParams {
-        messages: vec![ChatMessage::user("Hi")],
-        ..Default::default()
-    };
-
-    let mut handle = tool_loop_resumable(&mock, &registry, params, ToolLoopConfig::default(), &());
-
-    match handle.next_turn().await {
-        TurnResult::Completed(done) => {
-            assert_eq!(done.response.text(), Some("Via convenience"));
-        }
-        _ => panic!("expected Completed"),
-    }
-}
-
-#[tokio::test]
 async fn test_resumable_debug_impl() {
     let mock = mock_for("test", "test-model");
     mock.queue_response(sample_response("Debug"));
@@ -3161,10 +3052,10 @@ async fn test_resumable_timeout() {
 }
 
 #[tokio::test]
-async fn test_resumable_on_event_callback() {
-    use std::sync::Mutex;
+async fn test_resumable_events_via_stream() {
+    use futures::StreamExt;
 
-    let mock = mock_for("test", "test-model");
+    let mock = Arc::new(mock_for("test", "test-model"));
 
     mock.queue_response(sample_tool_response(vec![ToolCall {
         id: "c1".into(),
@@ -3173,50 +3064,535 @@ async fn test_resumable_on_event_callback() {
     }]));
     mock.queue_response(sample_response("Done"));
 
-    let events = Arc::new(Mutex::new(Vec::new()));
-    let events_clone = Arc::clone(&events);
-
     let mut registry: ToolRegistry<()> = ToolRegistry::new();
     registry.register(AddTool);
+    let registry = Arc::new(registry);
 
     let params = ChatParams {
         messages: vec![ChatMessage::user("Events")],
         ..Default::default()
     };
-    let config = ToolLoopConfig {
-        on_event: Some(Arc::new(move |event| {
-            events_clone.lock().unwrap().push(event);
-        })),
+    let config = ToolLoopConfig::default();
+
+    let stream = tool_loop_stream(mock, registry, params, config, Arc::new(()));
+    let results: Vec<Result<LoopEvent, _>> = stream.collect().await;
+    let events: Vec<LoopEvent> = results.into_iter().filter_map(Result::ok).collect();
+
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, LoopEvent::IterationStart { .. }))
+    );
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, LoopEvent::ToolExecutionStart { .. }))
+    );
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, LoopEvent::ToolExecutionEnd { .. }))
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// OwnedToolLoopHandle Tests
+// ─────────────────────────────────────────────────────────────────────────────
+
+use super::loop_owned::{OwnedToolLoopHandle, OwnedTurnResult};
+
+#[test]
+fn test_owned_handle_is_send_static() {
+    fn assert_send_static<T: Send + 'static>() {}
+    assert_send_static::<OwnedToolLoopHandle<()>>();
+}
+
+#[tokio::test]
+async fn test_owned_no_tools_completes() {
+    let mock = Arc::new(mock_for("test", "test-model"));
+    mock.queue_response(sample_response("Hello!"));
+
+    let registry = Arc::new(ToolRegistry::<()>::new());
+    let params = ChatParams {
+        messages: vec![ChatMessage::user("Hi")],
         ..Default::default()
     };
 
-    let mut handle = ToolLoopHandle::new(&mock, &registry, params, config, &());
+    let mut handle =
+        OwnedToolLoopHandle::new(mock, registry, params, ToolLoopConfig::default(), &());
 
     match handle.next_turn().await {
-        TurnResult::Yielded(turn) => turn.continue_loop(),
+        OwnedTurnResult::Completed(done) => {
+            assert_eq!(done.termination_reason, TerminationReason::Complete);
+            assert_eq!(done.response.text(), Some("Hello!"));
+        }
+        _ => panic!("expected Completed"),
+    }
+    assert!(handle.is_finished());
+}
+
+#[tokio::test]
+async fn test_owned_one_tool_iteration() {
+    let mock = Arc::new(mock_for("test", "test-model"));
+
+    mock.queue_response(sample_tool_response(vec![ToolCall {
+        id: "call_1".into(),
+        name: "add".into(),
+        arguments: json!({"a": 2, "b": 3}),
+    }]));
+    mock.queue_response(sample_response("The answer is 5"));
+
+    let mut registry = ToolRegistry::<()>::new();
+    registry.register(AddTool);
+    let registry = Arc::new(registry);
+
+    let params = ChatParams {
+        messages: vec![ChatMessage::user("What is 2 + 3?")],
+        ..Default::default()
+    };
+
+    let mut handle =
+        OwnedToolLoopHandle::new(mock, registry, params, ToolLoopConfig::default(), &());
+
+    match handle.next_turn().await {
+        OwnedTurnResult::Yielded(turn) => {
+            assert_eq!(turn.iteration, 1);
+            assert_eq!(turn.tool_calls.len(), 1);
+            assert_eq!(turn.tool_calls[0].name, "add");
+            assert_eq!(turn.results.len(), 1);
+            assert_eq!(turn.results[0].content, "5");
+            turn.continue_loop();
+        }
         _ => panic!("expected Yielded"),
     }
-    let _ = handle.next_turn().await;
 
-    let captured = events.lock().unwrap();
-    assert!(
-        captured
-            .iter()
-            .any(|e| matches!(e, ToolLoopEvent::IterationStart { .. }))
+    match handle.next_turn().await {
+        OwnedTurnResult::Completed(done) => {
+            assert_eq!(done.iterations, 2);
+            assert_eq!(done.response.text(), Some("The answer is 5"));
+        }
+        _ => panic!("expected Completed"),
+    }
+}
+
+#[tokio::test]
+async fn test_owned_inject_messages() {
+    let mock = Arc::new(mock_for("test", "test-model"));
+
+    mock.queue_response(sample_tool_response(vec![ToolCall {
+        id: "c1".into(),
+        name: "add".into(),
+        arguments: json!({"a": 1, "b": 2}),
+    }]));
+    mock.queue_response(sample_response("Done with injection"));
+
+    let mut registry = ToolRegistry::<()>::new();
+    registry.register(AddTool);
+    let registry = Arc::new(registry);
+
+    let params = ChatParams {
+        messages: vec![ChatMessage::user("Add")],
+        ..Default::default()
+    };
+
+    let mut handle = OwnedToolLoopHandle::new(
+        mock.clone(),
+        registry,
+        params,
+        ToolLoopConfig::default(),
+        &(),
     );
-    assert!(
-        captured
-            .iter()
-            .any(|e| matches!(e, ToolLoopEvent::ToolExecutionStart { .. }))
+
+    match handle.next_turn().await {
+        OwnedTurnResult::Yielded(turn) => {
+            turn.inject_and_continue(vec![ChatMessage::system("Extra context")]);
+        }
+        _ => panic!("expected Yielded"),
+    }
+
+    assert!(matches!(
+        handle.next_turn().await,
+        OwnedTurnResult::Completed(_)
+    ));
+
+    let recorded = mock.recorded_calls();
+    let last_call = &recorded[1];
+    let has_injection = last_call.messages.iter().any(|m| {
+        m.content.iter().any(|b| {
+            if let ContentBlock::Text(t) = b {
+                t.contains("Extra context")
+            } else {
+                false
+            }
+        })
+    });
+    assert!(has_injection, "Injected message should be in conversation");
+}
+
+#[tokio::test]
+async fn test_owned_stop_command() {
+    let mock = Arc::new(mock_for("test", "test-model"));
+
+    mock.queue_response(sample_tool_response(vec![ToolCall {
+        id: "c1".into(),
+        name: "add".into(),
+        arguments: json!({"a": 1, "b": 2}),
+    }]));
+    mock.queue_response(sample_response("Should not appear"));
+
+    let mut registry = ToolRegistry::<()>::new();
+    registry.register(AddTool);
+    let registry = Arc::new(registry);
+
+    let params = ChatParams {
+        messages: vec![ChatMessage::user("Stop early")],
+        ..Default::default()
+    };
+
+    let mut handle = OwnedToolLoopHandle::new(
+        mock.clone(),
+        registry,
+        params,
+        ToolLoopConfig::default(),
+        &(),
     );
-    assert!(
-        captured
-            .iter()
-            .any(|e| matches!(e, ToolLoopEvent::ToolExecutionEnd { .. }))
-    );
-    assert!(
-        captured
-            .iter()
-            .any(|e| matches!(e, ToolLoopEvent::LlmResponseReceived { .. }))
-    );
+
+    match handle.next_turn().await {
+        OwnedTurnResult::Yielded(turn) => {
+            turn.stop(Some("task_spawn detected".into()));
+        }
+        _ => panic!("expected Yielded"),
+    }
+
+    match handle.next_turn().await {
+        OwnedTurnResult::Completed(done) => {
+            assert!(matches!(
+                done.termination_reason,
+                TerminationReason::StopCondition {
+                    reason: Some(ref r)
+                } if r == "task_spawn detected"
+            ));
+        }
+        _ => panic!("expected Completed"),
+    }
+
+    assert_eq!(mock.recorded_calls().len(), 1);
+}
+
+#[tokio::test]
+async fn test_owned_usage_accumulation() {
+    let mock = Arc::new(mock_for("test", "test-model"));
+
+    mock.queue_response(sample_tool_response(vec![ToolCall {
+        id: "c1".into(),
+        name: "add".into(),
+        arguments: json!({"a": 1, "b": 2}),
+    }]));
+    mock.queue_response(sample_response("Done"));
+
+    let mut registry = ToolRegistry::<()>::new();
+    registry.register(AddTool);
+    let registry = Arc::new(registry);
+
+    let params = ChatParams {
+        messages: vec![ChatMessage::user("Chain")],
+        ..Default::default()
+    };
+
+    let mut handle =
+        OwnedToolLoopHandle::new(mock, registry, params, ToolLoopConfig::default(), &());
+
+    match handle.next_turn().await {
+        OwnedTurnResult::Yielded(turn) => {
+            assert_eq!(turn.total_usage.input_tokens, 100);
+            turn.continue_loop();
+        }
+        _ => panic!("expected Yielded"),
+    }
+
+    match handle.next_turn().await {
+        OwnedTurnResult::Completed(done) => {
+            assert_eq!(done.total_usage.input_tokens, 200);
+            assert_eq!(done.total_usage.output_tokens, 100);
+        }
+        _ => panic!("expected Completed"),
+    }
+
+    let result = handle.into_result();
+    assert_eq!(result.total_usage.input_tokens, 200);
+}
+
+#[tokio::test]
+async fn test_owned_inside_tokio_spawn() {
+    let mock = Arc::new(mock_for("test", "test-model"));
+
+    mock.queue_response(sample_tool_response(vec![ToolCall {
+        id: "c1".into(),
+        name: "add".into(),
+        arguments: json!({"a": 10, "b": 20}),
+    }]));
+    mock.queue_response(sample_response("Result: 30"));
+
+    let mut registry = ToolRegistry::<()>::new();
+    registry.register(AddTool);
+    let registry = Arc::new(registry);
+
+    let params = ChatParams {
+        messages: vec![ChatMessage::user("Compute")],
+        ..Default::default()
+    };
+
+    let mut handle =
+        OwnedToolLoopHandle::new(mock, registry, params, ToolLoopConfig::default(), &());
+
+    // The whole point: drive inside tokio::spawn
+    let result = tokio::spawn(async move {
+        loop {
+            match handle.next_turn().await {
+                OwnedTurnResult::Yielded(turn) => turn.continue_loop(),
+                OwnedTurnResult::Completed(done) => return done,
+                OwnedTurnResult::Error(err) => panic!("unexpected error: {}", err.error),
+            }
+        }
+    })
+    .await
+    .expect("spawned task should complete");
+
+    assert_eq!(result.response.text(), Some("Result: 30"));
+    assert_eq!(result.iterations, 2);
+    assert_eq!(result.total_usage.input_tokens, 200);
+}
+
+#[tokio::test]
+async fn test_owned_into_owned_preserves_state() {
+    let mock = mock_for("test", "test-model");
+
+    // Two iterations of tools, then completion
+    mock.queue_response(sample_tool_response(vec![ToolCall {
+        id: "c1".into(),
+        name: "add".into(),
+        arguments: json!({"a": 1, "b": 2}),
+    }]));
+    mock.queue_response(sample_tool_response(vec![ToolCall {
+        id: "c2".into(),
+        name: "add".into(),
+        arguments: json!({"a": 3, "b": 4}),
+    }]));
+    mock.queue_response(sample_response("Final"));
+
+    let mut registry = ToolRegistry::<()>::new();
+    registry.register(AddTool);
+
+    let params = ChatParams {
+        messages: vec![ChatMessage::user("Convert mid-flight")],
+        ..Default::default()
+    };
+
+    let mut handle = ToolLoopHandle::new(&mock, &registry, params, ToolLoopConfig::default(), &());
+
+    // Drive first iteration with borrowed handle
+    match handle.next_turn().await {
+        TurnResult::Yielded(turn) => {
+            assert_eq!(turn.iteration, 1);
+            turn.continue_loop();
+        }
+        _ => panic!("expected Yielded"),
+    }
+
+    // Convert to owned mid-flight (after 1 iteration).
+    // The original mock is behind a reference so we create a fresh provider
+    // with the remaining responses for the owned handle.
+    let new_mock = Arc::new(mock_for("test", "test-model"));
+    new_mock.queue_response(sample_tool_response(vec![ToolCall {
+        id: "c2".into(),
+        name: "add".into(),
+        arguments: json!({"a": 3, "b": 4}),
+    }]));
+    new_mock.queue_response(sample_response("Final"));
+
+    let registry_arc = Arc::new({
+        let mut r = ToolRegistry::<()>::new();
+        r.register(AddTool);
+        r
+    });
+
+    let mut owned = handle.into_owned(new_mock, registry_arc);
+
+    // State preserved: iterations = 1, messages include first tool call/result
+    assert_eq!(owned.iterations(), 1);
+    assert!(owned.messages().len() >= 3); // user + assistant + tool_result
+
+    // Continue driving with the owned handle
+    match owned.next_turn().await {
+        OwnedTurnResult::Yielded(turn) => {
+            assert_eq!(turn.iteration, 2);
+            turn.continue_loop();
+        }
+        _ => panic!("expected Yielded"),
+    }
+
+    match owned.next_turn().await {
+        OwnedTurnResult::Completed(done) => {
+            assert_eq!(done.iterations, 3);
+            assert_eq!(done.response.text(), Some("Final"));
+        }
+        _ => panic!("expected Completed"),
+    }
+}
+
+#[tokio::test]
+async fn test_owned_assistant_content_exposed() {
+    let mock = Arc::new(mock_for("test", "test-model"));
+
+    mock.queue_response(sample_tool_response_with_text(
+        "I'll help with that",
+        vec![ToolCall {
+            id: "c1".into(),
+            name: "add".into(),
+            arguments: json!({"a": 5, "b": 10}),
+        }],
+    ));
+    mock.queue_response(sample_response("The answer is 15"));
+
+    let mut registry = ToolRegistry::<()>::new();
+    registry.register(AddTool);
+    let registry = Arc::new(registry);
+
+    let params = ChatParams {
+        messages: vec![ChatMessage::user("What is 5 + 10?")],
+        ..Default::default()
+    };
+
+    let mut handle =
+        OwnedToolLoopHandle::new(mock, registry, params, ToolLoopConfig::default(), &());
+
+    match handle.next_turn().await {
+        OwnedTurnResult::Yielded(turn) => {
+            assert_eq!(turn.assistant_text(), Some("I'll help with that".into()));
+            turn.continue_loop();
+        }
+        _ => panic!("expected Yielded"),
+    }
+
+    match handle.next_turn().await {
+        OwnedTurnResult::Completed(done) => {
+            assert_eq!(done.response.text(), Some("The answer is 15"));
+        }
+        _ => panic!("expected Completed"),
+    }
+}
+
+#[tokio::test]
+async fn test_owned_debug_impl() {
+    let mock = Arc::new(mock_for("test", "test-model"));
+    mock.queue_response(sample_response("Debug"));
+
+    let registry = Arc::new(ToolRegistry::<()>::new());
+    let params = ChatParams {
+        messages: vec![ChatMessage::user("Hi")],
+        ..Default::default()
+    };
+
+    let handle = OwnedToolLoopHandle::new(mock, registry, params, ToolLoopConfig::default(), &());
+    let debug = format!("{handle:?}");
+    assert!(debug.contains("OwnedToolLoopHandle"));
+    assert!(debug.contains("iterations"));
+    assert!(debug.contains("finished"));
+}
+
+#[tokio::test]
+async fn test_owned_max_iterations() {
+    let mock = Arc::new(mock_for("test", "test-model"));
+
+    for _ in 0..5 {
+        mock.queue_response(sample_tool_response(vec![ToolCall {
+            id: "c".into(),
+            name: "add".into(),
+            arguments: json!({"a": 1, "b": 2}),
+        }]));
+    }
+
+    let mut registry = ToolRegistry::<()>::new();
+    registry.register(AddTool);
+    let registry = Arc::new(registry);
+
+    let params = ChatParams {
+        messages: vec![ChatMessage::user("Loop")],
+        ..Default::default()
+    };
+    let config = ToolLoopConfig {
+        max_iterations: 2,
+        ..Default::default()
+    };
+
+    let mut handle = OwnedToolLoopHandle::new(mock, registry, params, config, &());
+
+    match handle.next_turn().await {
+        OwnedTurnResult::Yielded(turn) => {
+            assert_eq!(turn.iteration, 1);
+            turn.continue_loop();
+        }
+        _ => panic!("expected Yielded"),
+    }
+
+    match handle.next_turn().await {
+        OwnedTurnResult::Yielded(turn) => {
+            assert_eq!(turn.iteration, 2);
+            turn.continue_loop();
+        }
+        _ => panic!("expected Yielded"),
+    }
+
+    match handle.next_turn().await {
+        OwnedTurnResult::Completed(done) => {
+            assert!(matches!(
+                done.termination_reason,
+                TerminationReason::MaxIterations { limit: 2 }
+            ));
+        }
+        _ => panic!("expected Completed"),
+    }
+}
+
+#[tokio::test]
+async fn test_owned_depth_exceeded() {
+    #[derive(Clone)]
+    struct DepthCtx(u32);
+    impl super::LoopDepth for DepthCtx {
+        fn loop_depth(&self) -> u32 {
+            self.0
+        }
+        fn with_depth(&self, depth: u32) -> Self {
+            DepthCtx(depth)
+        }
+    }
+
+    let mock = Arc::new(mock_for("test", "test-model"));
+    let registry = Arc::new(ToolRegistry::<DepthCtx>::new());
+
+    let params = ChatParams {
+        messages: vec![ChatMessage::user("Hi")],
+        ..Default::default()
+    };
+    let config = ToolLoopConfig {
+        max_depth: Some(1),
+        ..Default::default()
+    };
+
+    let ctx = DepthCtx(1);
+    let mut handle = OwnedToolLoopHandle::new(mock, registry, params, config, &ctx);
+
+    match handle.next_turn().await {
+        OwnedTurnResult::Error(err) => {
+            assert!(matches!(
+                err.error,
+                crate::LlmError::MaxDepthExceeded {
+                    current: 1,
+                    limit: 1
+                }
+            ));
+        }
+        _ => panic!("expected Error"),
+    }
+    assert!(handle.is_finished());
 }

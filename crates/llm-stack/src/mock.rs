@@ -239,6 +239,47 @@ impl MockProvider {
     }
 }
 
+/// Convert a `ChatResponse` into equivalent `StreamEvent`s.
+///
+/// Used by `MockProvider::stream()` when the stream queue is empty but
+/// the response queue has entries — enables existing tests that use
+/// `queue_response` to work transparently with `stream_boxed()`.
+fn response_to_stream_events(response: &ChatResponse) -> Vec<StreamEvent> {
+    use crate::chat::ContentBlock;
+
+    let mut events = Vec::new();
+    let mut tool_index = 0u32;
+
+    for block in &response.content {
+        match block {
+            ContentBlock::Text(text) => {
+                events.push(StreamEvent::TextDelta(text.clone()));
+            }
+            ContentBlock::ToolCall(call) => {
+                events.push(StreamEvent::ToolCallStart {
+                    index: tool_index,
+                    id: call.id.clone(),
+                    name: call.name.clone(),
+                });
+                events.push(StreamEvent::ToolCallComplete {
+                    index: tool_index,
+                    call: call.clone(),
+                });
+                tool_index += 1;
+            }
+            _ => {}
+        }
+    }
+
+    events.push(StreamEvent::Usage(response.usage.clone()));
+
+    events.push(StreamEvent::Done {
+        stop_reason: response.stop_reason,
+    });
+
+    events
+}
+
 impl Provider for MockProvider {
     async fn generate(&self, params: &ChatParams) -> Result<ChatResponse, LlmError> {
         self.record_call(params);
@@ -253,13 +294,23 @@ impl Provider for MockProvider {
 
     async fn stream(&self, params: &ChatParams) -> Result<ChatStream, LlmError> {
         self.record_call(params);
+
+        // Try the stream queue first; fall back to the response queue
+        // (auto-converting a ChatResponse into StreamEvents).
+        if let Some(result) = self.stream_responses.lock().unwrap().pop_front() {
+            let events = result.map_err(MockError::into_llm_error)?;
+            let stream = futures::stream::iter(events.into_iter().map(Ok));
+            return Ok(Box::pin(stream));
+        }
+
         let result = self
-            .stream_responses
+            .responses
             .lock()
             .unwrap()
             .pop_front()
-            .expect("MockProvider: no queued stream responses remaining");
-        let events = result.map_err(MockError::into_llm_error)?;
+            .expect("MockProvider: no queued responses or stream responses remaining");
+        let response = result.map_err(MockError::into_llm_error)?;
+        let events = response_to_stream_events(&response);
         let stream = futures::stream::iter(events.into_iter().map(Ok));
         Ok(Box::pin(stream))
     }

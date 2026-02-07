@@ -2,12 +2,11 @@
 
 use serde_json::Value;
 
-use crate::chat::{ChatMessage, ChatResponse, ToolCall, ToolResult};
+use crate::chat::{ChatMessage, ChatResponse, ToolCall};
 use crate::usage::Usage;
 
 use super::config::{
-    LoopAction, LoopDetectionConfig, TerminationReason, ToolLoopConfig, ToolLoopEvent,
-    ToolLoopResult,
+    LoopAction, LoopDetectionConfig, LoopEvent, TerminationReason, ToolLoopConfig, ToolLoopResult,
 };
 
 /// Read-only snapshot of the current iteration state.
@@ -20,8 +19,6 @@ pub(crate) struct IterationSnapshot<'a> {
     pub call_refs: &'a [&'a ToolCall],
     pub iterations: u32,
     pub total_usage: &'a Usage,
-    pub tool_calls_executed: usize,
-    pub last_tool_results: &'a [ToolResult],
     pub config: &'a ToolLoopConfig,
 }
 
@@ -186,20 +183,22 @@ pub(crate) enum LoopCheckResult {
 }
 
 /// Check for loop and determine action.
+///
+/// If a loop is detected, pushes a `LoopEvent::LoopDetected` into
+/// the provided event buffer.
 pub(crate) fn check_loop_detection_refs(
     state: &mut LoopDetectionState,
     calls: &[&ToolCall],
     config: Option<&LoopDetectionConfig>,
-    loop_config: &ToolLoopConfig,
+    events: &mut Vec<LoopEvent>,
 ) -> LoopCheckResult {
     let Some(detection) = config else {
         return LoopCheckResult::Continue;
     };
 
     if let Some((tool_name, count)) = state.update_refs(calls, detection.threshold) {
-        // Emit event
         let action = detection.action;
-        super::loop_sync::emit_event(loop_config, || ToolLoopEvent::LoopDetected {
+        events.push(LoopEvent::LoopDetected {
             tool_name: tool_name.clone(),
             consecutive_count: count,
             action,
@@ -226,16 +225,18 @@ pub(crate) fn create_loop_warning_message(tool_name: &str, count: u32) -> ChatMe
 /// Handle loop detection result, returning a termination result if the loop should stop.
 ///
 /// Mutates `messages` if the action is `InjectWarning`.
+/// Pushes `LoopEvent::LoopDetected` into `events` when a loop is detected.
 pub(crate) fn handle_loop_detection(
     state: &mut LoopDetectionState,
     snap: &IterationSnapshot<'_>,
     messages: &mut Vec<ChatMessage>,
+    events: &mut Vec<LoopEvent>,
 ) -> Option<ToolLoopResult> {
     match check_loop_detection_refs(
         state,
         snap.call_refs,
         snap.config.loop_detection.as_ref(),
-        snap.config,
+        events,
     ) {
         LoopCheckResult::Continue => None,
         LoopCheckResult::Stop { tool_name, count } => Some(ToolLoopResult {

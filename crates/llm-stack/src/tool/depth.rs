@@ -1,10 +1,20 @@
 //! Loop depth tracking for nested tool loops.
 //!
 //! When tools spawn sub-agents (nested `tool_loop` calls), depth tracking
-//! prevents runaway recursion. Implement [`LoopDepth`] on your context type
-//! to enable automatic depth management.
+//! prevents runaway recursion. Use [`LoopContext`] for built-in depth
+//! management, or implement [`LoopDepth`] manually on your own type.
 //!
-//! # Example
+//! # Using `LoopContext` (recommended)
+//!
+//! ```rust
+//! use llm_stack::tool::LoopContext;
+//!
+//! // Wrap your application state — depth tracking is automatic
+//! let ctx = LoopContext::new(MyState { user_id: "u123".into() });
+//! # #[derive(Clone)] struct MyState { user_id: String }
+//! ```
+//!
+//! # Manual implementation
 //!
 //! ```rust
 //! use llm_stack::tool::LoopDepth;
@@ -106,6 +116,85 @@ impl LoopDepth for () {
     fn with_depth(&self, _depth: u32) -> Self {}
 }
 
+// ── LoopContext ──────────────────────────────────────────────────────
+
+/// Generic context wrapper with built-in depth tracking.
+///
+/// Wraps any `Clone + Send + Sync` state and automatically implements
+/// [`LoopDepth`], eliminating the boilerplate of storing a `depth` field
+/// and writing the trait impl yourself.
+///
+/// # Examples
+///
+/// ```rust
+/// use llm_stack::tool::{LoopContext, LoopDepth, ToolRegistry};
+///
+/// #[derive(Clone)]
+/// struct AppState {
+///     user_id: String,
+///     api_key: String,
+/// }
+///
+/// let ctx = LoopContext::new(AppState {
+///     user_id: "user_123".into(),
+///     api_key: "sk-secret".into(),
+/// });
+///
+/// assert_eq!(ctx.loop_depth(), 0);
+/// assert_eq!(ctx.state.user_id, "user_123");
+///
+/// // Use with a typed registry
+/// let registry: ToolRegistry<LoopContext<AppState>> = ToolRegistry::new();
+/// ```
+///
+/// For the zero-state case, use `LoopContext<()>`:
+///
+/// ```rust
+/// use llm_stack::tool::{LoopContext, LoopDepth};
+///
+/// let ctx = LoopContext::empty();
+/// assert_eq!(ctx.loop_depth(), 0);
+///
+/// let nested = ctx.with_depth(1);
+/// assert_eq!(nested.loop_depth(), 1);
+/// ```
+#[derive(Clone, Debug)]
+pub struct LoopContext<T: Clone + Send + Sync = ()> {
+    /// The application state accessible from tool handlers.
+    pub state: T,
+    depth: u32,
+}
+
+impl<T: Clone + Send + Sync> LoopContext<T> {
+    /// Create a new context wrapping the given state at depth 0.
+    pub fn new(state: T) -> Self {
+        Self { state, depth: 0 }
+    }
+}
+
+impl LoopContext<()> {
+    /// Create a stateless context at depth 0.
+    pub fn empty() -> Self {
+        Self {
+            state: (),
+            depth: 0,
+        }
+    }
+}
+
+impl<T: Clone + Send + Sync> LoopDepth for LoopContext<T> {
+    fn loop_depth(&self) -> u32 {
+        self.depth
+    }
+
+    fn with_depth(&self, depth: u32) -> Self {
+        Self {
+            state: self.state.clone(),
+            depth,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -118,9 +207,7 @@ mod tests {
     #[test]
     #[allow(clippy::let_unit_value)]
     fn test_unit_with_depth_ignores_value() {
-        // with_depth on () returns (), which still has depth 0
         let nested = ().with_depth(5);
-        // Even after "nesting", unit context still reports depth 0
         assert_eq!(nested.loop_depth(), 0);
     }
 
@@ -153,7 +240,7 @@ mod tests {
 
         let nested = ctx.with_depth(1);
         assert_eq!(nested.loop_depth(), 1);
-        assert_eq!(nested.name, "test"); // Other fields preserved
+        assert_eq!(nested.name, "test");
     }
 
     #[test]
@@ -168,5 +255,57 @@ mod tests {
 
         let level2 = level1.with_depth(level1.loop_depth() + 1);
         assert_eq!(level2.loop_depth(), 2);
+    }
+
+    #[test]
+    fn test_loop_context_new() {
+        #[derive(Clone, Debug, PartialEq)]
+        struct State {
+            name: String,
+        }
+
+        let ctx = LoopContext::new(State {
+            name: "test".into(),
+        });
+        assert_eq!(ctx.loop_depth(), 0);
+        assert_eq!(ctx.state.name, "test");
+    }
+
+    #[test]
+    fn test_loop_context_with_depth_preserves_state() {
+        #[derive(Clone, Debug, PartialEq)]
+        struct State {
+            user_id: String,
+            api_key: String,
+        }
+
+        let ctx = LoopContext::new(State {
+            user_id: "u1".into(),
+            api_key: "k1".into(),
+        });
+
+        let nested = ctx.with_depth(3);
+        assert_eq!(nested.loop_depth(), 3);
+        assert_eq!(nested.state.user_id, "u1");
+        assert_eq!(nested.state.api_key, "k1");
+    }
+
+    #[test]
+    fn test_loop_context_empty() {
+        let ctx = LoopContext::empty();
+        assert_eq!(ctx.loop_depth(), 0);
+
+        let nested = ctx.with_depth(2);
+        assert_eq!(nested.loop_depth(), 2);
+    }
+
+    #[test]
+    fn test_loop_context_depth_chain() {
+        let ctx = LoopContext::new("agent");
+        let l1 = ctx.with_depth(ctx.loop_depth() + 1);
+        let l2 = l1.with_depth(l1.loop_depth() + 1);
+        let l3 = l2.with_depth(l2.loop_depth() + 1);
+        assert_eq!(l3.loop_depth(), 3);
+        assert_eq!(l3.state, "agent");
     }
 }

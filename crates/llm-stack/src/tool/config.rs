@@ -1,21 +1,29 @@
-//! Tool loop configuration types.
+//! Tool loop configuration and event types.
 
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
+use futures::Stream;
 use serde_json::Value;
 
 use crate::chat::{ChatResponse, ToolCall, ToolResult};
+use crate::error::LlmError;
 use crate::usage::Usage;
 
 /// Callback type for tool call approval.
 pub type ToolApprovalFn = Arc<dyn Fn(&ToolCall) -> ToolApproval + Send + Sync>;
 
-/// Callback type for tool loop events.
-pub type ToolLoopEventFn = Arc<dyn Fn(ToolLoopEvent) + Send + Sync>;
-
 /// Callback type for stop conditions.
 pub type StopConditionFn = Arc<dyn Fn(&StopContext) -> StopDecision + Send + Sync>;
+
+/// A pinned, boxed, `Send` stream of [`LoopEvent`] results.
+///
+/// The unified event stream from [`tool_loop_stream`](super::tool_loop_stream).
+/// Emits both LLM streaming events (text deltas, tool call fragments) and
+/// loop-level events (iteration boundaries, tool execution progress).
+/// Terminates with [`LoopEvent::Done`] carrying the final [`ToolLoopResult`].
+pub type LoopStream = Pin<Box<dyn Stream<Item = Result<LoopEvent, LlmError>> + Send>>;
 
 /// Context provided to stop condition callbacks.
 ///
@@ -86,7 +94,7 @@ impl Default for LoopDetectionConfig {
 /// Action to take when a tool call loop is detected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LoopAction {
-    /// Emit [`ToolLoopEvent::LoopDetected`] and continue execution.
+    /// Emit [`LoopEvent::LoopDetected`] and continue execution.
     ///
     /// Use this for monitoring/alerting without interrupting the agent.
     Warn,
@@ -104,39 +112,91 @@ pub enum LoopAction {
     InjectWarning,
 }
 
-/// Events emitted during tool loop execution for observability.
+/// Unified event emitted during tool loop execution.
 ///
-/// These events allow UIs to show real-time progress:
-/// - "Iteration 3 starting"
-/// - "Calling tool `search`..."
-/// - "Tool `search` completed in 200ms"
+/// `LoopEvent` merges LLM streaming events (text deltas, tool call fragments)
+/// with loop-level lifecycle events (iteration boundaries, tool execution
+/// progress) into a single stream. This gives consumers a complete, ordered
+/// view of everything happening inside the loop.
+///
+/// The stream terminates with [`Done`](Self::Done) carrying the final
+/// [`ToolLoopResult`].
 ///
 /// # Example
 ///
 /// ```rust,no_run
-/// use llm_stack::tool::{ToolLoopConfig, ToolLoopEvent};
+/// use llm_stack::tool::{tool_loop_stream, ToolLoopConfig, LoopEvent};
+/// use futures::StreamExt;
 /// use std::sync::Arc;
 ///
-/// let config = ToolLoopConfig {
-///     on_event: Some(Arc::new(|event| {
-///         match event {
-///             ToolLoopEvent::IterationStart { iteration, .. } => {
-///                 println!("Starting iteration {iteration}");
-///             }
-///             ToolLoopEvent::ToolExecutionStart { tool_name, .. } => {
-///                 println!("Calling {tool_name}...");
-///             }
-///             ToolLoopEvent::ToolExecutionEnd { tool_name, duration, .. } => {
-///                 println!("{tool_name} completed in {duration:?}");
-///             }
-///             _ => {}
+/// # async fn example(
+/// #     provider: Arc<dyn llm_stack::DynProvider>,
+/// #     registry: Arc<llm_stack::ToolRegistry<()>>,
+/// #     params: llm_stack::ChatParams,
+/// # ) {
+/// let mut stream = tool_loop_stream(provider, registry, params, ToolLoopConfig::default(), Arc::new(()));
+/// while let Some(event) = stream.next().await {
+///     match event.unwrap() {
+///         LoopEvent::TextDelta(text) => print!("{text}"),
+///         LoopEvent::IterationStart { iteration, .. } => {
+///             println!("\n--- Iteration {iteration} ---");
 ///         }
-///     })),
-///     ..Default::default()
-/// };
+///         LoopEvent::ToolExecutionStart { tool_name, .. } => {
+///             println!("[calling {tool_name}...]");
+///         }
+///         LoopEvent::ToolExecutionEnd { tool_name, duration, .. } => {
+///             println!("[{tool_name} completed in {duration:?}]");
+///         }
+///         LoopEvent::Done(result) => {
+///             println!("\nDone: {:?}", result.termination_reason);
+///             break;
+///         }
+///         _ => {}
+///     }
+/// }
+/// # }
 /// ```
 #[derive(Debug, Clone)]
-pub enum ToolLoopEvent {
+#[non_exhaustive]
+pub enum LoopEvent {
+    // ── LLM streaming (translated from provider StreamEvent) ────
+    /// A fragment of the model's text output.
+    TextDelta(String),
+
+    /// A fragment of the model's reasoning (chain-of-thought) output.
+    ReasoningDelta(String),
+
+    /// Announces that a new tool call has started.
+    ToolCallStart {
+        /// Zero-based index identifying this call when multiple tools
+        /// are invoked in parallel.
+        index: u32,
+        /// Provider-assigned identifier linking start → deltas → complete.
+        id: String,
+        /// The name of the tool being called.
+        name: String,
+    },
+
+    /// A JSON fragment of the tool call's arguments.
+    ToolCallDelta {
+        /// The tool-call index this delta belongs to.
+        index: u32,
+        /// A chunk of the JSON arguments string.
+        json_chunk: String,
+    },
+
+    /// The fully assembled tool call, ready to execute.
+    ToolCallComplete {
+        /// The tool-call index this completion corresponds to.
+        index: u32,
+        /// The complete, parsed tool call.
+        call: ToolCall,
+    },
+
+    /// Token usage information for this LLM call.
+    Usage(Usage),
+
+    // ── Loop lifecycle ──────────────────────────────────────────
     /// A new iteration of the tool loop is starting.
     IterationStart {
         /// The iteration number (1-indexed).
@@ -167,16 +227,6 @@ pub enum ToolLoopEvent {
         duration: Duration,
     },
 
-    /// LLM response received for this iteration.
-    LlmResponseReceived {
-        /// The iteration number (1-indexed).
-        iteration: u32,
-        /// Whether the response contains tool calls.
-        has_tool_calls: bool,
-        /// Length of any text content in the response.
-        text_length: usize,
-    },
-
     /// A tool call loop was detected.
     ///
     /// Emitted when the same tool is called with identical arguments
@@ -190,6 +240,12 @@ pub enum ToolLoopEvent {
         /// The action being taken in response.
         action: LoopAction,
     },
+
+    // ── Terminal ────────────────────────────────────────────────
+    /// The loop has finished. Carries the final [`ToolLoopResult`]
+    /// with the accumulated response, usage, iteration count, and
+    /// termination reason.
+    Done(ToolLoopResult),
 }
 
 /// Configuration for [`tool_loop`](super::tool_loop) and [`tool_loop_stream`](super::tool_loop_stream).
@@ -201,11 +257,6 @@ pub struct ToolLoopConfig {
     /// Optional callback to approve, deny, or modify each tool call
     /// before execution.
     pub on_tool_call: Option<ToolApprovalFn>,
-    /// Optional callback invoked during loop execution for observability.
-    ///
-    /// Receives [`ToolLoopEvent`]s at key points: iteration start,
-    /// tool execution start/end, and LLM response received.
-    pub on_event: Option<ToolLoopEventFn>,
     /// Optional stop condition checked after each LLM response.
     ///
     /// Receives a [`StopContext`] with information about the current
@@ -306,7 +357,6 @@ impl Default for ToolLoopConfig {
             max_iterations: 10,
             parallel_tool_execution: true,
             on_tool_call: None,
-            on_event: None,
             stop_when: None,
             loop_detection: None,
             timeout: None,
@@ -321,7 +371,6 @@ impl std::fmt::Debug for ToolLoopConfig {
             .field("max_iterations", &self.max_iterations)
             .field("parallel_tool_execution", &self.parallel_tool_execution)
             .field("has_on_tool_call", &self.on_tool_call.is_some())
-            .field("has_on_event", &self.on_event.is_some())
             .field("has_stop_when", &self.stop_when.is_some())
             .field("loop_detection", &self.loop_detection)
             .field("timeout", &self.timeout)
@@ -343,7 +392,7 @@ pub enum ToolApproval {
 }
 
 /// The result of a completed tool loop.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ToolLoopResult {
     /// The final response from the LLM (after all tool iterations).
     pub response: ChatResponse,

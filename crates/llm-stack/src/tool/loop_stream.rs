@@ -1,31 +1,37 @@
 //! Streaming tool loop implementation.
+//!
+//! Returns a [`LoopStream`] — a unified stream of [`LoopEvent`]s that
+//! includes both LLM streaming events (text deltas, tool call fragments)
+//! and loop-level lifecycle events (iteration boundaries, tool execution
+//! progress). Terminates with [`LoopEvent::Done`] carrying the final
+//! [`ToolLoopResult`].
+//!
+//! Between iterations (when executing tools), the stream emits
+//! `ToolExecutionStart` and `ToolExecutionEnd` events. No LLM deltas
+//! are emitted during this phase.
 
 use std::sync::Arc;
-use std::time::{Duration, Instant};
 
 use futures::StreamExt;
 
-use crate::chat::{ChatMessage, ChatResponse, ContentBlock, StopReason, ToolCall, ToolResult};
+use crate::chat::{ChatResponse, ContentBlock, StopReason, ToolCall};
 use crate::error::LlmError;
 use crate::provider::{ChatParams, DynProvider};
 use crate::stream::{ChatStream, StreamEvent};
 use crate::usage::Usage;
 
 use super::LoopDepth;
-use super::ToolError;
 use super::ToolRegistry;
-use super::approval::approve_calls;
-use super::config::{StopContext, StopDecision, TerminationReason, ToolLoopConfig, ToolLoopEvent};
-use super::execution::execute_with_events;
-use super::loop_detection::{IterationSnapshot, LoopDetectionState, handle_loop_detection};
-use super::loop_sync::emit_event;
+use super::config::{LoopEvent, LoopStream, ToolLoopConfig};
+use super::loop_core::{IterationOutcome, LoopCore, StartOutcome};
 
 /// Streaming variant of [`tool_loop`](super::tool_loop).
 ///
-/// Yields [`StreamEvent`]s from each iteration. Between iterations
-/// (when executing tools), no events are emitted. The final
-/// [`StreamEvent::Done`] carries the stop reason from the last
-/// iteration.
+/// Yields [`LoopEvent`]s from each iteration. LLM streaming events
+/// (text deltas, tool call fragments) are interleaved with loop-level
+/// events (iteration start, tool execution start/end). The stream
+/// terminates with [`LoopEvent::Done`] carrying the final
+/// [`ToolLoopResult`](super::ToolLoopResult).
 ///
 /// # Depth Tracking
 ///
@@ -33,339 +39,225 @@ use super::loop_sync::emit_event;
 /// When `config.max_depth` is set and the context's depth exceeds the limit,
 /// yields `Err(LlmError::MaxDepthExceeded)` immediately.
 ///
-/// # Events
-///
-/// If `config.on_event` is set, the callback will be invoked with
-/// [`ToolLoopEvent`]s at key points during execution, same as [`tool_loop`](super::tool_loop).
-///
 /// Uses `Arc` for provider, registry, and context since they must outlive
 /// the returned stream.
-#[allow(clippy::needless_pass_by_value)] // ctx is consumed to create nested_ctx
+#[allow(clippy::needless_pass_by_value)] // ctx Arc is consumed into LoopCore
 pub fn tool_loop_stream<Ctx: LoopDepth + Send + Sync + 'static>(
     provider: Arc<dyn DynProvider>,
     registry: Arc<ToolRegistry<Ctx>>,
     params: ChatParams,
     config: ToolLoopConfig,
     ctx: Arc<Ctx>,
-) -> ChatStream {
-    // Check depth limit at entry
-    let current_depth = ctx.loop_depth();
-    if let Some(max_depth) = config.max_depth {
-        if current_depth >= max_depth {
-            // Return a stream that immediately yields the depth error
-            return Box::pin(futures::stream::once(async move {
-                Err(LlmError::MaxDepthExceeded {
-                    current: current_depth,
-                    limit: max_depth,
-                })
-            }));
-        }
-    }
+) -> LoopStream {
+    let core = LoopCore::new(params, config, &*ctx);
 
-    // Create nested context with incremented depth
-    let nested_ctx = Arc::new(ctx.with_depth(current_depth + 1));
+    let state = UnfoldState {
+        core,
+        provider,
+        registry,
+        phase: StreamPhase::StartIteration,
+        current_text: String::new(),
+        current_tool_calls: Vec::new(),
+        current_usage: Usage::default(),
+        pending_events: Vec::new(),
+    };
 
-    let stream = futures::stream::unfold(
-        ToolLoopStreamState::new(provider, registry, params, config, nested_ctx),
-        |mut state| async move {
-            loop {
-                match std::mem::replace(&mut state.phase, StreamPhase::Done) {
-                    StreamPhase::Done => return None,
-                    StreamPhase::StartIteration => match phase_start_iteration(&mut state).await {
-                        PhaseResult::Yield(event, next) => {
-                            state.phase = next;
-                            return Some((event, state));
+    let stream = futures::stream::unfold(state, |mut state| async move {
+        loop {
+            // First, drain any pending events (from LoopCore's event buffer)
+            if let Some(event) = state.pending_events.pop() {
+                return Some((event, state));
+            }
+
+            match std::mem::replace(&mut state.phase, StreamPhase::Done) {
+                StreamPhase::Done => return None,
+
+                StreamPhase::StartIteration => {
+                    match state.core.start_iteration(&*state.provider).await {
+                        StartOutcome::Stream(s) => {
+                            state.current_text.clear();
+                            state.current_tool_calls.clear();
+                            state.current_usage = Usage::default();
+                            // Drain IterationStart event from core
+                            state.load_core_events();
+                            state.phase = StreamPhase::Streaming(s);
                         }
-                        PhaseResult::Continue(next) => state.phase = next,
-                    },
-                    StreamPhase::Streaming(stream) => {
-                        match phase_streaming(&mut state, stream).await {
-                            PhaseResult::Yield(event, next) => {
-                                state.phase = next;
-                                return Some((event, state));
+                        StartOutcome::Terminal(outcome) => {
+                            // Drain any events (e.g., Done from finish())
+                            state.load_core_events();
+                            if let Some(event) = outcome_to_error(*outcome) {
+                                state.phase = StreamPhase::Done;
+                                // Push error, then let pending_events drain
+                                state.pending_events.push(event);
                             }
-                            PhaseResult::Continue(next) => state.phase = next,
+                            // Continue loop to drain pending_events
                         }
-                    }
-                    StreamPhase::ExecutingTools => {
-                        state.phase = phase_executing_tools(&mut state).await;
                     }
                 }
+
+                StreamPhase::Streaming(mut stream) => match stream.next().await {
+                    Some(Ok(event)) => {
+                        // Accumulate for finish_iteration
+                        if let StreamEvent::TextDelta(ref t) = event {
+                            state.current_text.push_str(t);
+                        }
+                        if let StreamEvent::ToolCallComplete { ref call, .. } = event {
+                            state.current_tool_calls.push(call.clone());
+                        }
+                        if let StreamEvent::Usage(ref u) = event {
+                            state.current_usage += u;
+                        }
+
+                        let is_done = matches!(&event, StreamEvent::Done { .. });
+                        let loop_event = translate_stream_event(event);
+
+                        if is_done {
+                            // Provider stream done — move to tool execution
+                            state.phase = StreamPhase::ExecutingTools;
+                        } else {
+                            state.phase = StreamPhase::Streaming(stream);
+                        }
+
+                        // Don't forward provider-level Done — it's not the loop being done
+                        if let Some(le) = loop_event {
+                            return Some((Ok(le), state));
+                        }
+                        // If we filtered out Done, continue loop
+                    }
+                    Some(Err(e)) => {
+                        state.phase = StreamPhase::Done;
+                        return Some((Err(e), state));
+                    }
+                    None => {
+                        // Stream exhausted without Done — clean end
+                        return None;
+                    }
+                },
+
+                StreamPhase::ExecutingTools => {
+                    let response = build_response(
+                        &state.current_text,
+                        &state.current_tool_calls,
+                        std::mem::take(&mut state.current_usage),
+                    );
+                    let outcome = state.core.finish_iteration(response, &state.registry).await;
+
+                    // Drain tool execution events + possible Done from core
+                    state.load_core_events();
+
+                    match outcome {
+                        IterationOutcome::ToolsExecuted { .. } => {
+                            state.phase = StreamPhase::StartIteration;
+                        }
+                        IterationOutcome::Completed(_) => {
+                            // Done event already in pending_events from finish()
+                            state.phase = StreamPhase::Done;
+                        }
+                        IterationOutcome::Error(data) => {
+                            state.phase = StreamPhase::Done;
+                            state.pending_events.push(Err(data.error));
+                        }
+                    }
+                    // Continue loop to drain pending_events
+                }
             }
-        },
-    );
+        }
+    });
+
     Box::pin(stream)
 }
 
-/// Result of processing a stream phase.
-enum PhaseResult {
-    /// Yield an event and transition to the next phase.
-    Yield(Result<StreamEvent, LlmError>, StreamPhase),
-    /// Transition to the next phase without yielding.
-    Continue(StreamPhase),
-}
-
-/// Handle the `StartIteration` phase: emit event, check limits, start LLM stream.
-async fn phase_start_iteration<Ctx: LoopDepth + Send + Sync + 'static>(
-    state: &mut ToolLoopStreamState<Ctx>,
-) -> PhaseResult {
-    // Check timeout at start of each iteration
-    if let Some(limit) = state.timeout_limit {
-        if state.start_time.elapsed() >= limit {
-            let err = LlmError::ToolExecution {
-                tool_name: String::new(),
-                source: Box::new(ToolError::new(format!(
-                    "Tool loop exceeded timeout of {limit:?}",
-                ))),
-            };
-            return PhaseResult::Yield(Err(err), StreamPhase::Done);
-        }
-    }
-
-    state.iterations += 1;
-
-    let iterations = state.iterations;
-    let msg_count = state.params.messages.len();
-    emit_event(&state.config, || ToolLoopEvent::IterationStart {
-        iteration: iterations,
-        message_count: msg_count,
-    });
-
-    if state.iterations > state.config.max_iterations {
-        let err = LlmError::ToolExecution {
-            tool_name: String::new(),
-            source: Box::new(ToolError::new(format!(
-                "Tool loop exceeded {} iterations",
-                state.config.max_iterations,
-            ))),
-        };
-        return PhaseResult::Yield(Err(err), StreamPhase::Done);
-    }
-
-    match state.provider.stream_boxed(&state.params).await {
-        Ok(s) => {
-            state.current_tool_calls.clear();
-            state.current_text.clear();
-            PhaseResult::Continue(StreamPhase::Streaming(s))
-        }
-        Err(e) => PhaseResult::Yield(Err(e), StreamPhase::Done),
-    }
-}
-
-/// Handle the `Streaming` phase: pull events from the LLM stream.
-async fn phase_streaming<Ctx: LoopDepth + Send + Sync + 'static>(
-    state: &mut ToolLoopStreamState<Ctx>,
-    mut stream: ChatStream,
-) -> PhaseResult {
-    match stream.next().await {
-        Some(Ok(event)) => {
-            if let StreamEvent::TextDelta(ref text) = event {
-                state.current_text.push_str(text);
-            }
-            if let StreamEvent::ToolCallComplete { ref call, .. } = event {
-                state.current_tool_calls.push(call.clone());
-            }
-            if let StreamEvent::Usage(ref u) = event {
-                state.total_usage += u;
-            }
-            if let StreamEvent::Done { stop_reason } = &event {
-                let iterations = state.iterations;
-                let has_tool_calls = !state.current_tool_calls.is_empty();
-                let text_length = state.current_text.len();
-                emit_event(&state.config, || ToolLoopEvent::LlmResponseReceived {
-                    iteration: iterations,
-                    has_tool_calls,
-                    text_length,
-                });
-
-                // Check stop condition before deciding next phase
-                if let Some(ref stop_fn) = state.config.stop_when {
-                    // Construct a ChatResponse from accumulated state for the stop condition
-                    let response = build_response_from_stream_state(state, *stop_reason);
-                    let ctx = StopContext {
-                        iteration: state.iterations,
-                        response: &response,
-                        total_usage: &state.total_usage,
-                        tool_calls_executed: state.tool_calls_executed,
-                        last_tool_results: &state.last_tool_results,
-                    };
-                    match stop_fn(&ctx) {
-                        StopDecision::Continue => {}
-                        StopDecision::Stop | StopDecision::StopWithReason(_) => {
-                            // Stop early - yield Done and terminate
-                            return PhaseResult::Yield(Ok(event), StreamPhase::Done);
-                        }
-                    }
-                }
-
-                if *stop_reason == StopReason::ToolUse && !state.current_tool_calls.is_empty() {
-                    // Check for loop detection before executing tools
-                    let response = build_response_from_stream_state(state, *stop_reason);
-                    let call_refs: Vec<&ToolCall> = state.current_tool_calls.iter().collect();
-                    let snap = IterationSnapshot {
-                        response: &response,
-                        call_refs: &call_refs,
-                        iterations: state.iterations,
-                        total_usage: &state.total_usage,
-                        tool_calls_executed: state.tool_calls_executed,
-                        last_tool_results: &state.last_tool_results,
-                        config: &state.config,
-                    };
-                    if let Some(result) = handle_loop_detection(
-                        &mut state.loop_state,
-                        &snap,
-                        &mut state.params.messages,
-                    ) {
-                        // Convert termination reason to error for streaming
-                        let err = match result.termination_reason {
-                            TerminationReason::LoopDetected {
-                                ref tool_name,
-                                count,
-                            } => LlmError::ToolExecution {
-                                tool_name: tool_name.clone(),
-                                source: Box::new(ToolError::new(format!(
-                                    "Tool loop detected: '{tool_name}' called {count} \
-                                         consecutive times with identical arguments"
-                                ))),
-                            },
-                            _ => LlmError::ToolExecution {
-                                tool_name: String::new(),
-                                source: Box::new(ToolError::new("Unexpected termination")),
-                            },
-                        };
-                        return PhaseResult::Yield(Err(err), StreamPhase::Done);
-                    }
-                    // Yield the Done event, then transition to ExecutingTools
-                    return PhaseResult::Yield(Ok(event), StreamPhase::ExecutingTools);
-                }
-            }
-            PhaseResult::Yield(Ok(event), StreamPhase::Streaming(stream))
-        }
-        Some(Err(e)) => PhaseResult::Yield(Err(e), StreamPhase::Done),
-        // Stream exhausted — this is the clean termination path after Done event
-        None => PhaseResult::Continue(StreamPhase::Done),
-    }
-}
-
-/// Build a `ChatResponse` from accumulated stream state (for stop condition checks).
-fn build_response_from_stream_state<Ctx: LoopDepth + Send + Sync + 'static>(
-    state: &ToolLoopStreamState<Ctx>,
-    stop_reason: StopReason,
-) -> ChatResponse {
-    let mut content = Vec::new();
-    if !state.current_text.is_empty() {
-        content.push(ContentBlock::Text(state.current_text.clone()));
-    }
-    for call in &state.current_tool_calls {
-        content.push(ContentBlock::ToolCall(call.clone()));
-    }
-
-    ChatResponse {
-        content,
-        usage: state.total_usage.clone(),
-        stop_reason,
-        model: String::new(), // Not available in stream state
-        metadata: std::collections::HashMap::new(),
-    }
-}
-
-/// Handle the `ExecutingTools` phase: run tools, update messages, return next phase.
-async fn phase_executing_tools<Ctx: LoopDepth + Send + Sync + 'static>(
-    state: &mut ToolLoopStreamState<Ctx>,
-) -> StreamPhase {
-    // Take ownership of accumulated tool calls; clone for assistant message content
-    let calls = std::mem::take(&mut state.current_tool_calls);
-    let assistant_calls: Vec<ContentBlock> =
-        calls.iter().cloned().map(ContentBlock::ToolCall).collect();
-    let (approved, denied) = approve_calls(calls, &state.config);
-
-    let results = execute_with_events(
-        &state.registry,
-        approved,
-        denied,
-        state.config.parallel_tool_execution,
-        &state.config,
-        &state.ctx,
-    )
-    .await;
-
-    // Track executed tool calls for stop condition
-    state.tool_calls_executed += results.len();
-    state.last_tool_results.clone_from(&results);
-
-    let mut assistant_content: Vec<ContentBlock> = Vec::new();
-    if !state.current_text.is_empty() {
-        assistant_content.push(ContentBlock::Text(std::mem::take(&mut state.current_text)));
-    }
-    assistant_content.extend(assistant_calls);
-    state.params.messages.push(ChatMessage {
-        role: crate::chat::ChatRole::Assistant,
-        content: assistant_content,
-    });
-    for result in results {
-        state
-            .params
-            .messages
-            .push(ChatMessage::tool_result_full(result));
-    }
-
-    StreamPhase::StartIteration
-}
-
-/// Internal state for the streaming tool loop.
-struct ToolLoopStreamState<Ctx: LoopDepth + Send + Sync + 'static> {
-    provider: Arc<dyn DynProvider>,
-    registry: Arc<ToolRegistry<Ctx>>,
-    params: ChatParams,
-    config: ToolLoopConfig,
-    ctx: Arc<Ctx>,
-    iterations: u32,
-    total_usage: Usage,
-    tool_calls_executed: usize,
-    last_tool_results: Vec<ToolResult>,
-    current_tool_calls: Vec<ToolCall>,
-    current_text: String,
-    phase: StreamPhase,
-    loop_state: LoopDetectionState,
-    /// Start time for timeout tracking.
-    start_time: Instant,
-    /// Cached timeout limit from config.
-    timeout_limit: Option<Duration>,
-}
-
+/// Phases of the streaming state machine.
 enum StreamPhase {
     StartIteration,
     Streaming(ChatStream),
     ExecutingTools,
-    /// Terminal state — unfold returns `None` on next poll.
     Done,
 }
 
-impl<Ctx: LoopDepth + Send + Sync + 'static> ToolLoopStreamState<Ctx> {
-    fn new(
-        provider: Arc<dyn DynProvider>,
-        registry: Arc<ToolRegistry<Ctx>>,
-        params: ChatParams,
-        config: ToolLoopConfig,
-        ctx: Arc<Ctx>,
-    ) -> Self {
-        let timeout_limit = config.timeout;
-        Self {
-            provider,
-            registry,
-            params,
-            config,
-            ctx,
-            iterations: 0,
-            total_usage: Usage::default(),
-            tool_calls_executed: 0,
-            last_tool_results: Vec::new(),
-            current_tool_calls: Vec::new(),
-            current_text: String::new(),
-            phase: StreamPhase::StartIteration,
-            loop_state: LoopDetectionState::default(),
-            start_time: Instant::now(),
-            timeout_limit,
+/// State carried through the unfold.
+struct UnfoldState<Ctx: LoopDepth + Send + Sync + 'static> {
+    core: LoopCore<Ctx>,
+    provider: Arc<dyn DynProvider>,
+    registry: Arc<ToolRegistry<Ctx>>,
+    phase: StreamPhase,
+    current_text: String,
+    current_tool_calls: Vec<ToolCall>,
+    current_usage: Usage,
+    /// Events waiting to be yielded. Popped from the back (LIFO)
+    /// so we reverse when loading from core.
+    pending_events: Vec<Result<LoopEvent, LlmError>>,
+}
+
+impl<Ctx: LoopDepth + Send + Sync + 'static> UnfoldState<Ctx> {
+    /// Drain events from `LoopCore`'s buffer into our pending queue.
+    ///
+    /// Events are reversed so we can `pop()` from the back in FIFO order.
+    fn load_core_events(&mut self) {
+        let events = self.core.drain_events();
+        // Reverse so pop() yields in original order
+        for event in events.into_iter().rev() {
+            self.pending_events.push(Ok(event));
         }
+    }
+}
+
+/// Translate a provider `StreamEvent` into a `LoopEvent`.
+///
+/// Returns `None` for `StreamEvent::Done` — the provider's "done" is not
+/// the loop's "done". The loop continues with tool execution.
+fn translate_stream_event(event: StreamEvent) -> Option<LoopEvent> {
+    match event {
+        StreamEvent::TextDelta(t) => Some(LoopEvent::TextDelta(t)),
+        StreamEvent::ReasoningDelta(t) => Some(LoopEvent::ReasoningDelta(t)),
+        StreamEvent::ToolCallStart { index, id, name } => {
+            Some(LoopEvent::ToolCallStart { index, id, name })
+        }
+        StreamEvent::ToolCallDelta { index, json_chunk } => {
+            Some(LoopEvent::ToolCallDelta { index, json_chunk })
+        }
+        StreamEvent::ToolCallComplete { index, call } => {
+            Some(LoopEvent::ToolCallComplete { index, call })
+        }
+        StreamEvent::Usage(u) => Some(LoopEvent::Usage(u)),
+        StreamEvent::Done { .. } => None, // Filtered — not the loop's done
+    }
+}
+
+/// Build a `ChatResponse` from accumulated stream data.
+fn build_response(text: &str, tool_calls: &[ToolCall], usage: Usage) -> ChatResponse {
+    let mut content = Vec::new();
+    if !text.is_empty() {
+        content.push(ContentBlock::Text(text.to_owned()));
+    }
+    for call in tool_calls {
+        content.push(ContentBlock::ToolCall(call.clone()));
+    }
+
+    let stop_reason = if tool_calls.is_empty() {
+        StopReason::EndTurn
+    } else {
+        StopReason::ToolUse
+    };
+
+    ChatResponse {
+        content,
+        usage,
+        stop_reason,
+        model: String::new(),
+        metadata: std::collections::HashMap::new(),
+    }
+}
+
+/// Convert a terminal `IterationOutcome` into an error event.
+///
+/// `Completed` outcomes are NOT converted to errors — they produce
+/// `LoopEvent::Done` via the core's event buffer. Only `Error` outcomes
+/// become `Err` items in the stream.
+fn outcome_to_error(outcome: IterationOutcome) -> Option<Result<LoopEvent, LlmError>> {
+    match outcome {
+        IterationOutcome::Error(data) => Some(Err(data.error)),
+        // Completed outcomes push Done into the core's event buffer
+        IterationOutcome::Completed(_) | IterationOutcome::ToolsExecuted { .. } => None,
     }
 }

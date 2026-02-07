@@ -125,13 +125,16 @@ let handler = tool_fn(
 When tools need access to shared state (database connections, user identity, etc.):
 
 ```rust
-use llm_stack::{tool_fn_with_ctx, ToolDefinition, JsonSchema, ToolOutput, ToolRegistry, tool_loop, ToolLoopConfig, ChatParams, ChatMessage};
+use llm_stack::{tool_fn_with_ctx, ToolDefinition, JsonSchema, ToolOutput, ToolRegistry, tool_loop, ToolLoopConfig, LoopContext, ChatParams, ChatMessage};
 use serde_json::{json, Value};
 
-struct AppContext {
+#[derive(Clone)]
+struct AppState {
     user_id: String,
     api_key: String,
 }
+
+type AppCtx = LoopContext<AppState>;
 
 let handler = tool_fn_with_ctx(
     ToolDefinition {
@@ -146,25 +149,23 @@ let handler = tool_fn_with_ctx(
         })),
         retry: None,
     },
-    |args: Value, ctx: &AppContext| {
+    |args: Value, ctx: &AppCtx| {
         let limit = args["limit"].as_u64().unwrap_or(10);
-        let user_id = ctx.user_id.clone();
-        let api_key = ctx.api_key.clone();
+        let user_id = ctx.state.user_id.clone();
         async move {
-            // Use user_id, api_key, and limit to fetch orders...
             Ok(ToolOutput::new(format!("Found {limit} orders for user {user_id}")))
         }
     },
 );
 
 // Create registry and context
-let mut registry: ToolRegistry<AppContext> = ToolRegistry::new();
+let mut registry: ToolRegistry<AppCtx> = ToolRegistry::new();
 registry.register(handler);
 
-let ctx = AppContext {
+let ctx = LoopContext::new(AppState {
     user_id: "user_123".into(),
     api_key: "sk-secret".into(),
-};
+});
 
 // Run tool loop with context
 let params = ChatParams {
@@ -259,7 +260,7 @@ let config = ToolLoopConfig {
     max_iterations: 10,              // Max tool call rounds (default: 10)
     parallel_tool_execution: true,   // Execute multiple tools in parallel
     on_tool_call: None,              // Optional approval callback
-    on_event: None,                  // Optional observability callback
+    // Events flow through the LoopStream from tool_loop_stream()
     stop_when: None,                 // Custom stop condition
     loop_detection: None,            // Detect stuck agents
     timeout: Some(Duration::from_secs(30)),  // Wall-clock timeout
@@ -388,51 +389,18 @@ let config = ToolLoopConfig {
 };
 ```
 
-### Observability events
+### Observability
 
-Get real-time events during tool loop execution:
-
-```rust
-use llm_stack::{ToolLoopConfig, ToolLoopEvent};
-use std::sync::Arc;
-
-fn log_event(event: &ToolLoopEvent) {
-    match event {
-        ToolLoopEvent::IterationStart { iteration, message_count } => {
-            println!("Starting iteration {iteration} ({message_count} messages)");
-        }
-        ToolLoopEvent::ToolExecutionStart { tool_name, .. } => {
-            println!("Calling {tool_name}...");
-        }
-        ToolLoopEvent::ToolExecutionEnd { tool_name, duration, result, .. } => {
-            let status = if result.is_error { "failed" } else { "completed" };
-            println!("{tool_name} {status} in {duration:?}");
-        }
-        ToolLoopEvent::LlmResponseReceived { iteration, has_tool_calls, .. } => {
-            if *has_tool_calls {
-                println!("Iteration {iteration}: model requested tools");
-            } else {
-                println!("Iteration {iteration}: model finished");
-            }
-        }
-        ToolLoopEvent::LoopDetected { tool_name, consecutive_count, .. } => {
-            println!("Loop detected: {tool_name} called {consecutive_count} times");
-        }
-    }
-}
-
-let config = ToolLoopConfig {
-    on_event: Some(Arc::new(log_event)),
-    ..Default::default()
-};
-```
+All events — LLM streaming, tool execution, iteration boundaries — flow through `tool_loop_stream`'s unified `LoopEvent` stream. See [Streaming tool loops](#streaming-tool-loops) for the full example. No separate callbacks needed.
 
 ## Streaming tool loops
 
-For real-time output, use `tool_loop_stream`:
+Internally, all loop variants use streaming as the fundamental LLM operation. `LoopCore` calls `stream_boxed()` and non-streaming callers (`tool_loop`, `ToolLoopHandle`) collect the stream into a `ChatResponse` automatically. This means there is a single iteration engine — no duplicated logic between streaming and non-streaming paths.
+
+`tool_loop_stream` returns a `LoopStream` — a unified stream of `LoopEvent`s that includes both LLM streaming events (text deltas, tool call fragments) and loop-level lifecycle events (iteration start, tool execution start/end). The stream terminates with `LoopEvent::Done` carrying the final `ToolLoopResult`.
 
 ```rust
-use llm_stack::tool_loop_stream;
+use llm_stack::{tool_loop_stream, LoopEvent};
 use futures::StreamExt;
 use std::sync::Arc;
 
@@ -440,50 +408,32 @@ let provider = Arc::new(provider);
 let registry = Arc::new(registry);
 let ctx = Arc::new(());
 
-let stream = tool_loop_stream(provider, registry, params, config, ctx);
+let mut stream = tool_loop_stream(provider, registry, params, config, ctx);
 
-futures::pin_mut!(stream);
 while let Some(event) = stream.next().await {
     match event? {
-        StreamEvent::TextDelta(text) => print!("{text}"),
-        StreamEvent::ToolCallStart { name, .. } => println!("\n[Calling {name}...]"),
-        StreamEvent::Done { .. } => break,
-        _ => {}
-    }
-}
-```
-
-### Channel-based streaming with backpressure
-
-For slow consumers, use `tool_loop_channel` to prevent unbounded memory growth:
-
-```rust
-use llm_stack::tool_loop_channel;
-
-let (mut rx, handle) = tool_loop_channel(
-    provider,
-    registry,
-    params,
-    config,
-    ctx,
-    32,  // Buffer size
-);
-
-// Consume events at your own pace
-while let Some(event) = rx.recv().await {
-    match event? {
-        StreamEvent::TextDelta(text) => {
-            // Slow processing is fine — producer blocks when buffer is full
-            send_to_client(text).await;
+        LoopEvent::TextDelta(text) => print!("{text}"),
+        LoopEvent::ToolCallStart { name, .. } => println!("\n[Calling {name}...]"),
+        LoopEvent::IterationStart { iteration, .. } => {
+            println!("--- Iteration {iteration} ---");
         }
-        StreamEvent::Done { .. } => break,
+        LoopEvent::ToolExecutionStart { tool_name, .. } => {
+            println!("[calling {tool_name}...]");
+        }
+        LoopEvent::ToolExecutionEnd { tool_name, duration, .. } => {
+            println!("[{tool_name} completed in {duration:?}]");
+        }
+        LoopEvent::Done(result) => {
+            println!("\nDone: {:?}", result.termination_reason);
+            println!("Final: {}", result.response.text().unwrap_or_default());
+            break;
+        }
         _ => {}
     }
 }
-
-// Get the final result
-let result = handle.await?;
 ```
+
+The consumer gets the full picture — LLM text as it streams, tool execution progress, and the final result — all from one stream. No separate callbacks needed.
 
 ## Resumable tool loop
 
@@ -612,17 +562,60 @@ The handle exposes loop state between iterations:
 - `handle.is_finished()` — whether a terminal event was returned
 - `handle.into_result()` — consume handle into a `ToolLoopResult`
 
-### Convenience constructor
+All `ToolLoopConfig` options (max_iterations, timeout, stop_when, loop_detection, approval hooks) work identically to `tool_loop`.
 
-`tool_loop_resumable()` is an alias for `ToolLoopHandle::new()`:
+## Owned tool loop (for tokio::spawn)
+
+`OwnedToolLoopHandle` is identical to `ToolLoopHandle` but owns its provider and registry via `Arc`, making it `Send + 'static`. Use it when the loop must outlive its creator — spawned task agents, holding across `'static` await points, or sending to another thread.
 
 ```rust
-use llm_stack::tool_loop_resumable;
+use llm_stack::{
+    ChatMessage, ChatParams, DynProvider,
+    tool::{ToolRegistry, ToolLoopConfig, OwnedToolLoopHandle, OwnedTurnResult},
+};
+use std::sync::Arc;
 
-let mut handle = tool_loop_resumable(provider, &registry, params, config, &ctx);
+let provider: Arc<dyn DynProvider> = Arc::new(my_provider);
+let registry = Arc::new(ToolRegistry::<()>::new());
+
+let params = ChatParams {
+    messages: vec![ChatMessage::user("Analyze this dataset")],
+    tools: Some(registry.definitions()),
+    ..Default::default()
+};
+
+let mut handle = OwnedToolLoopHandle::new(
+    provider, registry, params, ToolLoopConfig::default(), &(),
+);
+
+// Safe to move into tokio::spawn
+tokio::spawn(async move {
+    loop {
+        match handle.next_turn().await {
+            OwnedTurnResult::Yielded(turn) => turn.continue_loop(),
+            OwnedTurnResult::Completed(done) => {
+                println!("Done: {:?}", done.response.text());
+                break;
+            }
+            OwnedTurnResult::Error(err) => {
+                eprintln!("Error: {}", err.error);
+                break;
+            }
+        }
+    }
+});
 ```
 
-All `ToolLoopConfig` options (max_iterations, timeout, stop_when, loop_detection, approval hooks, on_event) work identically to `tool_loop`.
+### When to use which
+
+| Type | Ownership | Use case |
+|------|-----------|----------|
+| `tool_loop` | Borrows everything | Simple fire-and-forget loops |
+| `tool_loop_stream` | `Arc` provider/registry/ctx | Real-time streaming output |
+| `ToolLoopHandle` | Borrows provider/registry | Master orchestrator driving the loop on its stack |
+| `OwnedToolLoopHandle` | `Arc` provider/registry | Task agents via `tokio::spawn` |
+
+`ToolLoopHandle` can be converted to `OwnedToolLoopHandle` mid-flight via `into_owned()` if you later need to spawn the loop.
 
 ## Tool results
 
@@ -765,6 +758,32 @@ impl LoopDepth for AgentContext {
 
 The `tool_loop` automatically increments depth when passing context to tool handlers.
 
+### LoopContext — ready-made wrapper
+
+If depth tracking is all you need, use `LoopContext<T>` instead of implementing `LoopDepth` manually:
+
+```rust
+use llm_stack::tool::LoopContext;
+
+#[derive(Clone)]
+struct AppState {
+    user_id: String,
+    db: Arc<DatabasePool>,
+}
+
+// LoopContext<AppState> already implements LoopDepth
+let ctx = LoopContext::new(AppState {
+    user_id: "user_123".into(),
+    db: pool.clone(),
+});
+
+// Access your state through .state
+println!("User: {}", ctx.state.user_id);
+
+// Or use LoopContext::empty() for no state but with depth tracking
+let ctx: LoopContext<()> = LoopContext::empty();
+```
+
 ### Depth limits
 
 Prevent runaway recursion with `max_depth`:
@@ -863,4 +882,4 @@ let result = tool_loop(provider, &registry, params, config, &()).await?;
 7. **Set reasonable limits** — Use `max_iterations` and `timeout` to prevent runaway loops
 8. **Use approval hooks** — For tools with side effects (file writes, API calls)
 9. **Configure retries** — For unreliable external services
-10. **Monitor with events** — Use `on_event` for logging and metrics
+10. **Monitor with events** — Use `tool_loop_stream` for real-time logging and metrics
