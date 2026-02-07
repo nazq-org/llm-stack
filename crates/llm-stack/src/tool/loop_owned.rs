@@ -64,7 +64,7 @@ use crate::usage::Usage;
 
 use super::LoopDepth;
 use super::ToolRegistry;
-use super::config::{ToolLoopConfig, ToolLoopResult};
+use super::config::{LoopEvent, ToolLoopConfig, ToolLoopResult};
 use super::loop_core::{CompletedData, ErrorData, IterationOutcome, LoopCore};
 use super::loop_resumable::{
     Completed, LoopCommand, TurnError, impl_yielded_methods, outcome_to_turn_result,
@@ -209,6 +209,14 @@ impl<Ctx: LoopDepth + Send + Sync + 'static> OwnedToolLoopHandle<Ctx> {
     /// Whether the loop has finished (returned Completed or Error).
     pub fn is_finished(&self) -> bool {
         self.core.is_finished()
+    }
+
+    /// Drain buffered [`LoopEvent`]s from the most recent iteration.
+    ///
+    /// See [`ToolLoopHandle::drain_events`](super::ToolLoopHandle::drain_events)
+    /// for full documentation.
+    pub fn drain_events(&mut self) -> Vec<LoopEvent> {
+        self.core.drain_events()
     }
 
     /// Consume the handle and return a `ToolLoopResult`.

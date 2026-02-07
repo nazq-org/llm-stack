@@ -62,7 +62,7 @@ use crate::usage::Usage;
 
 use super::LoopDepth;
 use super::ToolRegistry;
-use super::config::{TerminationReason, ToolLoopConfig, ToolLoopResult};
+use super::config::{LoopEvent, TerminationReason, ToolLoopConfig, ToolLoopResult};
 use super::loop_core::{CompletedData, ErrorData, IterationOutcome, LoopCore};
 
 // ── Shared macros for Yielded-like types ─────────────────────────────
@@ -398,6 +398,19 @@ impl<'a, Ctx: LoopDepth + Send + Sync + 'static> ToolLoopHandle<'a, Ctx> {
     /// Whether the loop has finished (returned Completed or Error).
     pub fn is_finished(&self) -> bool {
         self.core.is_finished()
+    }
+
+    /// Drain buffered [`LoopEvent`]s from the most recent iteration.
+    ///
+    /// Each call to [`next_turn()`](Self::next_turn) generates lifecycle events
+    /// (`IterationStart`, `ToolExecutionStart`, `ToolExecutionEnd`, etc.) in an
+    /// internal buffer. Call this after `next_turn()` to retrieve them.
+    ///
+    /// Returns an empty `Vec` if no events are buffered. Events are cleared
+    /// on each drain, so calling twice without an intervening `next_turn()`
+    /// returns empty on the second call.
+    pub fn drain_events(&mut self) -> Vec<LoopEvent> {
+        self.core.drain_events()
     }
 
     /// Consume the handle and return a `ToolLoopResult`.
