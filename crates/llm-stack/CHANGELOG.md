@@ -2,6 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.4.0] - 2026-02-07
+
+### Features
+
+- *(tool)* Unified LoopEvent stream and streaming-first LoopCore ([#16](https://github.com/nazq-org/llm-stack/pull/16))
+
+### Miscellaneous
+
+- Release v0.3.0 ([#14](https://github.com/nazq-org/llm-stack/pull/14))
+
+### Refactor
+
+- *(tool)* Post-review cleanup — dedup, correctness, and docs ([#17](https://github.com/nazq-org/llm-stack/pull/17))
+
+
 ## [0.3.0] - 2026-02-06
 
 ### Bug Fixes
