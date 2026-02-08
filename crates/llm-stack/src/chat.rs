@@ -12,7 +12,8 @@
 //! results, and reasoning traces without special-casing:
 //!
 //! ```rust
-//! use llm_stack::{ChatMessage, ContentBlock, ChatRole};
+//! use llm_stack::{ChatMessage, ContentBlock};
+//! use llm_stack::chat::ChatRole;
 //!
 //! // Simple text message
 //! let msg = ChatMessage::user("Hello, world!");
@@ -24,7 +25,7 @@
 //!         ContentBlock::Text("What's in this image?".into()),
 //!         ContentBlock::Image {
 //!             media_type: "image/png".into(),
-//!             data: llm_stack::ImageSource::Base64("...".into()),
+//!             data: llm_stack::chat::ImageSource::Base64("...".into()),
 //!         },
 //!     ],
 //! };
@@ -194,7 +195,7 @@ impl ChatMessage {
     ///     "content": [{"text": "Hello!"}]
     /// });
     /// let msg = ChatMessage::from_json(&json).expect("valid message");
-    /// assert_eq!(msg.role, llm_stack::ChatRole::User);
+    /// assert_eq!(msg.role, llm_stack::chat::ChatRole::User);
     /// ```
     pub fn from_json(value: &Value) -> Result<Self, serde_json::Error> {
         serde_json::from_value(value.clone())
@@ -216,7 +217,7 @@ impl ChatMessage {
     ///     "content": [{"text": "Hello!"}]
     /// });
     /// let msg = ChatMessage::from_json_owned(json).expect("valid message");
-    /// assert_eq!(msg.role, llm_stack::ChatRole::User);
+    /// assert_eq!(msg.role, llm_stack::chat::ChatRole::User);
     /// ```
     pub fn from_json_owned(value: Value) -> Result<Self, serde_json::Error> {
         serde_json::from_value(value)
@@ -403,7 +404,9 @@ impl ChatResponse {
     /// # Example
     ///
     /// ```rust
-    /// # use llm_stack::{ChatResponse, ToolCall, ContentBlock, StopReason, Usage};
+    /// # use llm_stack::{ChatResponse, ToolCall, ContentBlock};
+    /// # use llm_stack::chat::StopReason;
+    /// # use llm_stack::usage::Usage;
     /// # use serde_json::json;
     /// let response = ChatResponse {
     ///     content: vec![

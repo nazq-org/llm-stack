@@ -21,7 +21,8 @@
 //! use rmcp::service::RunningService;
 //! use rmcp::handler::client::ClientHandler;
 //! use rmcp::RoleClient;
-//! use llm_stack::{McpService, McpError, ToolDefinition, JsonSchema};
+//! use llm_stack::{ToolDefinition, JsonSchema};
+//! use llm_stack::mcp::{McpService, McpError};
 //!
 //! /// Adapter: wraps rmcp RunningService to implement llm-core's McpService
 //! pub struct RmcpAdapter<S: ClientHandler> {
@@ -86,7 +87,8 @@
 //!
 //! ```rust,ignore
 //! use std::sync::Arc;
-//! use llm_stack::{ToolRegistry, McpRegistryExt};
+//! use llm_stack::ToolRegistry;
+//! use llm_stack::mcp::McpRegistryExt;
 //!
 //! // Create your MCP service (using rmcp or any other library)
 //! let mcp_service = Arc::new(RmcpAdapter::new(rmcp_client));
