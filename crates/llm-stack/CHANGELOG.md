@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.0] - 2026-02-07
+
+### Features
+
+- *(tool)* Expose drain_events() on resumable loop handles ([#18](https://github.com/nazq-org/llm-stack/pull/18))
+
+### Refactor
+
+- *(tool)* Embed lifecycle events in all TurnResult variants ([#19](https://github.com/nazq-org/llm-stack/pull/19))
+
+
 ## [0.4.0] - 2026-02-07
 
 ### Features
