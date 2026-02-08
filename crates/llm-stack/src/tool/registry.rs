@@ -28,7 +28,8 @@ use crate::provider::{ToolDefinition, ToolRetryConfig};
 /// like logging, approval gates, or rate limiting:
 ///
 /// ```rust,ignore
-/// use llm_stack::{ToolRegistry, tool_fn};
+/// use llm_stack::ToolRegistry;
+/// use llm_stack::tool::tool_fn;
 /// use llm_stack::intercept::{InterceptorStack, ToolExec, Approval, ApprovalDecision};
 ///
 /// let mut registry: ToolRegistry<()> = ToolRegistry::new()
@@ -212,7 +213,8 @@ impl<Ctx: Send + Sync + 'static> ToolRegistry<Ctx> {
     /// # Example
     ///
     /// ```rust,ignore
-    /// use llm_stack::{ToolRegistry, tool_fn};
+    /// use llm_stack::ToolRegistry;
+    /// use llm_stack::tool::tool_fn;
     /// use llm_stack::intercept::{InterceptorStack, ToolExec, Approval, ApprovalDecision, Retry};
     ///
     /// let registry: ToolRegistry<()> = ToolRegistry::new()

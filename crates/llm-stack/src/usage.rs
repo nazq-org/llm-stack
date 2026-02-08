@@ -110,7 +110,7 @@ impl AddAssign<&Usage> for Usage {
 /// # Examples
 ///
 /// ```rust
-/// use llm_stack::Cost;
+/// use llm_stack::usage::Cost;
 ///
 /// let cost = Cost::new(300_000, 150_000).expect("no overflow");
 /// assert_eq!(cost.total_microdollars(), 450_000);

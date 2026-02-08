@@ -21,13 +21,13 @@
 //! # Architecture
 //!
 //! ```text
-//!  ┌───────────────────┐ ┌───────────────────┐ ┌───────────────────┐
-//!  │ llm-stack-anthropic│ │  llm-stack-openai │ │  llm-stack-ollama │
-//!  └─────────┬─────────┘ └─────────┬─────────┘ └─────────┬─────────┘
-//!            │                     │                     │
-//!            └──────────┬──────────┴──────────┬──────────┘
-//!                       │                     │
-//!                       ▼                     ▼
+//!  ┌─────────────────────┐ ┌───────────────────┐ ┌───────────────────┐
+//!  │ llm-stack-anthropic │ │  llm-stack-openai  │ │  llm-stack-ollama │
+//!  └──────────┬──────────┘ └─────────┬─────────┘ └─────────┬─────────┘
+//!             │                      │                     │
+//!             └───────────┬──────────┴──────────┬──────────┘
+//!                         │                     │
+//!                         ▼                     ▼
 //!              ┌─────────────────────────────────────┐
 //!              │             llm-stack               │  ← you are here
 //!              │  (Provider trait, ChatParams, etc.) │
@@ -87,35 +87,26 @@ pub mod mock;
 #[cfg(any(test, feature = "test-utils"))]
 pub mod test_helpers;
 
-pub use chat::{
-    ChatMessage, ChatResponse, ChatRole, ContentBlock, ImageSource, StopReason, ToolCall,
-    ToolResult,
-};
+// ── Core re-exports ────────────────────────────────────────────────
+//
+// Only the types that appear in nearly every program are re-exported
+// at the crate root. Everything else lives in its submodule:
+//
+//   llm_stack::tool::*        — tool execution, loop handles, events
+//   llm_stack::provider::*    — capabilities, metadata, retry config
+//   llm_stack::chat::*        — StopReason, ImageSource, ChatRole
+//   llm_stack::stream::*      — ChatStream, StreamEvent
+//   llm_stack::usage::*       — Cost, ModelPricing, UsageTracker
+//   llm_stack::context::*     — ContextWindow, token estimation
+//   llm_stack::registry::*    — ProviderRegistry, ProviderFactory
+//   llm_stack::mcp::*         — McpService, McpRegistryExt
+//   llm_stack::structured::*  — generate_object, stream_object_async
+//   llm_stack::mock::*        — MockProvider (test-utils feature)
+
+pub use chat::{ChatMessage, ChatResponse, ContentBlock, ToolCall, ToolResult};
 pub use error::LlmError;
-pub use provider::{
-    Capability, ChatParams, DynProvider, JsonSchema, Provider, ProviderMetadata, RetryPredicate,
-    ToolChoice, ToolDefinition, ToolRetryConfig,
-};
+pub use provider::{ChatParams, DynProvider, JsonSchema, Provider, ToolChoice, ToolDefinition};
+pub use registry::ProviderRegistry;
 pub use stream::{ChatStream, StreamEvent};
-pub use tool::{
-    Completed, FnToolHandler, LoopAction, LoopCommand, LoopContext, LoopDepth, LoopDetectionConfig,
-    LoopEvent, LoopStream, NoCtxToolHandler, OwnedToolLoopHandle, OwnedTurnResult, OwnedYielded,
-    StopConditionFn, StopContext, StopDecision, TerminationReason, ToolApproval, ToolError,
-    ToolHandler, ToolLoopConfig, ToolLoopHandle, ToolLoopResult, ToolOutput, ToolRegistry,
-    TurnError, TurnResult, Yielded, tool_fn, tool_fn_with_ctx,
-};
-pub use usage::{Cost, ModelPricing, Usage, UsageTracker};
-
-pub use context::{ContextWindow, estimate_message_tokens, estimate_tokens};
-pub use registry::{ProviderConfig, ProviderFactory, ProviderRegistry};
-
-pub use mcp::{McpError, McpRegistryExt, McpService};
-
-#[cfg(feature = "schema")]
-pub use structured::{
-    GenerateObjectConfig, GenerateObjectResult, PartialObject, collect_stream_object,
-    generate_object, stream_object_async,
-};
-
-#[cfg(any(test, feature = "test-utils"))]
-pub use mock::{MockError, MockProvider};
+pub use tool::{ToolHandler, ToolLoopConfig, ToolRegistry};
+pub use usage::Usage;

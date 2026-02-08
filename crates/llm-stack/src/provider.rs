@@ -256,7 +256,7 @@ pub type RetryPredicate = std::sync::Arc<dyn Fn(&str) -> bool + Send + Sync>;
 /// # Example
 ///
 /// ```rust
-/// use llm_stack::ToolRetryConfig;
+/// use llm_stack::provider::ToolRetryConfig;
 /// use std::time::Duration;
 ///
 /// let config = ToolRetryConfig {
