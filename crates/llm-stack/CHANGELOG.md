@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.6.0] - 2026-02-08
+
+### Refactor
+
+- Trim root re-exports to core vocabulary ([#21](https://github.com/nazq-org/llm-stack/pull/21))
+
+
 ## [0.5.0] - 2026-02-07
 
 ### Features
