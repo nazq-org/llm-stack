@@ -1,15 +1,15 @@
 //! Provider-agnostic integration tests for tool loop.
 //!
-//! Tests run against whichever provider(s) have keys configured:
-//! - `ANTHROPIC_API_KEY` → Anthropic Claude (Haiku)
+//! These tests hit live APIs and are marked `#[ignore]` so they don't
+//! run in CI. Run manually with:
+//! ```sh
+//! ANTHROPIC_API_KEY=sk-ant-... cargo test -p llm-stack --test integration_tool_loop -- --ignored --test-threads=1 --nocapture
+//! ```
+//!
+//! Supported providers (first available wins):
+//! - `ANTHROPIC_API_KEY` → Anthropic Claude (Haiku 4.5)
 //! - `OPENAI_API_KEY` → `OpenAI` (gpt-4o-mini)
 //! - Ollama on `localhost:11434` → Ollama (llama3.2)
-//!
-//! Set keys in `.cargo/config.toml` (gitignored) or env vars.
-//! Run with:
-//! ```sh
-//! cargo test -p llm-stack --test integration_tool_loop -- --test-threads=1 --nocapture
-//! ```
 
 use std::sync::Arc;
 
@@ -35,7 +35,7 @@ fn discover_provider() -> Option<(Box<dyn DynProvider>, &'static str)> {
             let p =
                 llm_stack_anthropic::AnthropicProvider::new(llm_stack_anthropic::AnthropicConfig {
                     api_key: key,
-                    model: "claude-3-5-haiku-20241022".into(),
+                    model: "claude-haiku-4-5-20251001".into(),
                     ..Default::default()
                 });
             return Some((Box::new(p), "anthropic"));
@@ -160,6 +160,7 @@ async fn collect_events(
 // ── Streaming: simple text (no tools) ─────────────────────────────
 
 #[tokio::test]
+#[ignore = "live API"]
 async fn test_stream_simple_text_no_tools() {
     let provider = skip_without_provider!();
     let provider: Arc<dyn DynProvider> = Arc::from(provider);
@@ -222,6 +223,7 @@ async fn test_stream_simple_text_no_tools() {
 // ── Streaming: single tool call ───────────────────────────────────
 
 #[tokio::test]
+#[ignore = "live API"]
 async fn test_stream_single_tool_call() {
     let provider = skip_without_provider!();
     let provider: Arc<dyn DynProvider> = Arc::from(provider);
@@ -335,6 +337,7 @@ async fn test_stream_single_tool_call() {
 // ── Streaming: multi tool call (parallel) ─────────────────────────
 
 #[tokio::test]
+#[ignore = "live API"]
 async fn test_stream_multi_tool_call() {
     let provider = skip_without_provider!();
     let provider: Arc<dyn DynProvider> = Arc::from(provider);
@@ -431,6 +434,7 @@ enum Phase {
 }
 
 #[tokio::test]
+#[ignore = "live API"]
 async fn test_stream_event_ordering() {
     let provider = skip_without_provider!();
     let provider: Arc<dyn DynProvider> = Arc::from(provider);
@@ -509,6 +513,7 @@ async fn test_stream_event_ordering() {
 // ── Synchronous: tool_loop simple ─────────────────────────────────
 
 #[tokio::test]
+#[ignore = "live API"]
 async fn test_sync_simple_no_tools() {
     let provider = skip_without_provider!();
 
@@ -543,6 +548,7 @@ async fn test_sync_simple_no_tools() {
 // ── Synchronous: single tool call ─────────────────────────────────
 
 #[tokio::test]
+#[ignore = "live API"]
 async fn test_sync_single_tool_call() {
     let provider = skip_without_provider!();
     let registry = make_registry();
@@ -585,6 +591,7 @@ async fn test_sync_single_tool_call() {
 // ── Synchronous: multi tool call ──────────────────────────────────
 
 #[tokio::test]
+#[ignore = "live API"]
 async fn test_sync_multi_tool_call() {
     let provider = skip_without_provider!();
     let registry = make_registry();
@@ -627,6 +634,7 @@ async fn test_sync_multi_tool_call() {
 // ── Streaming: max iterations ─────────────────────────────────────
 
 #[tokio::test]
+#[ignore = "live API"]
 async fn test_stream_max_iterations() {
     let provider = skip_without_provider!();
     let provider: Arc<dyn DynProvider> = Arc::from(provider);
@@ -724,6 +732,7 @@ async fn test_stream_max_iterations() {
 // ── Streaming: tool execution timing ──────────────────────────────
 
 #[tokio::test]
+#[ignore = "live API"]
 async fn test_stream_tool_execution_has_duration() {
     let provider = skip_without_provider!();
     let provider: Arc<dyn DynProvider> = Arc::from(provider);
@@ -757,6 +766,7 @@ async fn test_stream_tool_execution_has_duration() {
 // ── Streaming: usage accumulation ─────────────────────────────────
 
 #[tokio::test]
+#[ignore = "live API"]
 async fn test_stream_usage_accumulation() {
     let provider = skip_without_provider!();
     let provider: Arc<dyn DynProvider> = Arc::from(provider);
@@ -793,6 +803,7 @@ async fn test_stream_usage_accumulation() {
 // ── Streaming: stop condition ─────────────────────────────────────
 
 #[tokio::test]
+#[ignore = "live API"]
 async fn test_stream_stop_condition() {
     let provider = skip_without_provider!();
     let provider: Arc<dyn DynProvider> = Arc::from(provider);
@@ -847,6 +858,7 @@ async fn test_stream_stop_condition() {
 // ── Streaming: tool call arguments are correct ────────────────────
 
 #[tokio::test]
+#[ignore = "live API"]
 async fn test_stream_tool_call_arguments() {
     let provider = skip_without_provider!();
     let provider: Arc<dyn DynProvider> = Arc::from(provider);
@@ -898,6 +910,7 @@ async fn test_stream_tool_call_arguments() {
 // ── Streaming: tool result in ToolExecutionEnd ────────────────────
 
 #[tokio::test]
+#[ignore = "live API"]
 async fn test_stream_tool_result_content() {
     let provider = skip_without_provider!();
     let provider: Arc<dyn DynProvider> = Arc::from(provider);
@@ -931,6 +944,7 @@ async fn test_stream_tool_result_content() {
 // ── Streaming: tool error handling ────────────────────────────────
 
 #[tokio::test]
+#[ignore = "live API"]
 async fn test_stream_tool_error_recovery() {
     let provider = skip_without_provider!();
     let provider: Arc<dyn DynProvider> = Arc::from(provider);
@@ -1039,6 +1053,7 @@ async fn test_stream_tool_error_recovery() {
 // ── Streaming: sequential tool chaining ───────────────────────────
 
 #[tokio::test]
+#[ignore = "live API"]
 async fn test_stream_sequential_tool_chaining() {
     let provider = skip_without_provider!();
     let provider: Arc<dyn DynProvider> = Arc::from(provider);

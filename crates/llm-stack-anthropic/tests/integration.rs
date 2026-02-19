@@ -1,11 +1,11 @@
 //! Integration tests for the Anthropic provider.
 //!
-//! These tests require a valid `ANTHROPIC_API_KEY` environment variable.
-//! They are skipped (not failed) when the key is not present.
+//! These tests require a valid `ANTHROPIC_API_KEY` environment variable
+//! and are marked `#[ignore]` so they don't run in CI.
 //!
 //! Run with:
 //! ```sh
-//! ANTHROPIC_API_KEY=sk-ant-... cargo test -p llm-anthropic --test integration
+//! ANTHROPIC_API_KEY=sk-ant-... cargo test -p llm-stack-anthropic --test integration -- --ignored
 //! ```
 
 use futures::StreamExt;
@@ -24,7 +24,7 @@ fn test_provider() -> Option<AnthropicProvider> {
     Some(AnthropicProvider::new(AnthropicConfig {
         api_key,
         // Use Haiku for fast, cheap integration tests
-        model: "claude-3-5-haiku-20241022".into(),
+        model: "claude-haiku-4-5-20251001".into(),
         ..Default::default()
     }))
 }
@@ -42,6 +42,7 @@ macro_rules! skip_without_key {
 }
 
 #[tokio::test]
+#[ignore = "live API"]
 async fn test_simple_generate() {
     let provider = skip_without_key!();
 
@@ -60,10 +61,11 @@ async fn test_simple_generate() {
     assert!(text.contains('4'), "Expected '4' in response: {text}");
     assert!(response.usage.input_tokens > 0);
     assert!(response.usage.output_tokens > 0);
-    assert_eq!(response.model, "claude-3-5-haiku-20241022");
+    assert_eq!(response.model, "claude-haiku-4-5-20251001");
 }
 
 #[tokio::test]
+#[ignore = "live API"]
 async fn test_generate_with_system_prompt() {
     let provider = skip_without_key!();
 
@@ -82,6 +84,7 @@ async fn test_generate_with_system_prompt() {
 }
 
 #[tokio::test]
+#[ignore = "live API"]
 async fn test_generate_with_temperature() {
     let provider = skip_without_key!();
 
@@ -97,6 +100,7 @@ async fn test_generate_with_temperature() {
 }
 
 #[tokio::test]
+#[ignore = "live API"]
 async fn test_multi_turn_conversation() {
     let provider = skip_without_key!();
 
@@ -119,6 +123,7 @@ async fn test_multi_turn_conversation() {
 }
 
 #[tokio::test]
+#[ignore = "live API"]
 async fn test_tool_calling() {
     let provider = skip_without_key!();
 
@@ -156,6 +161,7 @@ async fn test_tool_calling() {
 }
 
 #[tokio::test]
+#[ignore = "live API"]
 async fn test_tool_result_roundtrip() {
     let provider = skip_without_key!();
 
@@ -216,6 +222,7 @@ async fn test_tool_result_roundtrip() {
 }
 
 #[tokio::test]
+#[ignore = "live API"]
 async fn test_max_tokens_limit() {
     let provider = skip_without_key!();
 
@@ -232,10 +239,11 @@ async fn test_max_tokens_limit() {
 }
 
 #[tokio::test]
+#[ignore = "live API"]
 async fn test_invalid_api_key() {
     let provider = AnthropicProvider::new(AnthropicConfig {
         api_key: "sk-ant-invalid-key".into(),
-        model: "claude-3-5-haiku-20241022".into(),
+        model: "claude-haiku-4-5-20251001".into(),
         ..Default::default()
     });
 
@@ -253,12 +261,13 @@ async fn test_invalid_api_key() {
 }
 
 #[tokio::test]
+#[ignore = "live API"]
 async fn test_metadata() {
     let provider = skip_without_key!();
     let meta = provider.metadata();
 
     assert_eq!(meta.name, "anthropic");
-    assert_eq!(meta.model, "claude-3-5-haiku-20241022");
+    assert_eq!(meta.model, "claude-haiku-4-5-20251001");
     assert!(
         meta.capabilities
             .contains(&llm_stack::provider::Capability::Tools)
@@ -272,6 +281,7 @@ async fn test_metadata() {
 // ── Streaming tests ──────────────────────────────────────────────────
 
 #[tokio::test]
+#[ignore = "live API"]
 async fn test_stream_simple_text() {
     let provider = skip_without_key!();
 
@@ -304,6 +314,7 @@ async fn test_stream_simple_text() {
 }
 
 #[tokio::test]
+#[ignore = "live API"]
 async fn test_stream_with_usage() {
     let provider = skip_without_key!();
 
@@ -328,6 +339,7 @@ async fn test_stream_with_usage() {
 }
 
 #[tokio::test]
+#[ignore = "live API"]
 async fn test_stream_tool_calling() {
     let provider = skip_without_key!();
 
@@ -390,6 +402,7 @@ async fn test_stream_tool_calling() {
 }
 
 #[tokio::test]
+#[ignore = "live API"]
 async fn test_stream_max_tokens() {
     let provider = skip_without_key!();
 

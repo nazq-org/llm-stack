@@ -121,6 +121,19 @@ pub(crate) struct LoopCore<Ctx: LoopDepth + Send + Sync + 'static> {
     final_result: Option<ToolLoopResult>,
     depth_error: Option<LlmError>,
     events: Vec<LoopEvent>,
+    /// Maps message index → iteration number for tool result messages.
+    /// Used by observation masking to determine which results are old.
+    tool_result_meta: Vec<ToolResultMeta>,
+}
+
+/// Metadata for a tool result message in the conversation.
+struct ToolResultMeta {
+    /// Index of this message in `params.messages`.
+    message_index: usize,
+    /// Iteration in which this tool result was added.
+    iteration: u32,
+    /// Whether this result has already been masked.
+    masked: bool,
 }
 
 impl<Ctx: LoopDepth + Send + Sync + 'static> LoopCore<Ctx> {
@@ -158,6 +171,7 @@ impl<Ctx: LoopDepth + Send + Sync + 'static> LoopCore<Ctx> {
             final_result: None,
             depth_error,
             events: Vec::new(),
+            tool_result_meta: Vec::new(),
         }
     }
 
@@ -202,6 +216,9 @@ impl<Ctx: LoopDepth + Send + Sync + 'static> LoopCore<Ctx> {
                 },
             )));
         }
+
+        // Observation masking: replace old tool results with placeholders
+        self.mask_old_observations();
 
         // Start LLM stream
         match provider.stream_boxed(&self.params).await {
@@ -416,15 +433,25 @@ impl<Ctx: LoopDepth + Send + Sync + 'static> LoopCore<Ctx> {
 
         self.events.extend(exec_result.events);
 
-        let results = exec_result.results;
+        let mut results = exec_result.results;
         self.tool_calls_executed += results.len();
+
+        // Post-process, extract, and optionally cache tool results
+        self.postprocess_results(&mut results, &outcome_calls).await;
+
         self.last_tool_results.clone_from(&results);
 
-        // Append tool results to conversation
+        // Append tool results to conversation and record metadata for masking
         for result in &results {
+            let idx = self.params.messages.len();
             self.params
                 .messages
                 .push(ChatMessage::tool_result_full(result.clone()));
+            self.tool_result_meta.push(ToolResultMeta {
+                message_index: idx,
+                iteration: self.iterations,
+                masked: false,
+            });
         }
 
         IterationOutcome::ToolsExecuted {
@@ -433,6 +460,104 @@ impl<Ctx: LoopDepth + Send + Sync + 'static> LoopCore<Ctx> {
             assistant_content: other_content,
             iteration: self.iterations,
             total_usage: self.total_usage.clone(),
+        }
+    }
+
+    // ── Result post-processing pipeline ────────────────────────
+
+    /// Three-stage post-processing pipeline for tool results.
+    ///
+    /// 1. **Structural pruning** — sync `ToolResultProcessor`
+    /// 2. **Semantic extraction** — async `ToolResultExtractor` (for large results)
+    /// 3. **Cache overflow** — sync `ToolResultCacher` (for still-large results)
+    async fn postprocess_results(&mut self, results: &mut [ToolResult], calls: &[ToolCall]) {
+        let has_processor = self.config.result_processor.is_some();
+        let has_extractor = self.config.result_extractor.is_some();
+        let has_cacher = self.config.result_cacher.is_some();
+
+        if !has_processor && !has_extractor && !has_cacher {
+            return;
+        }
+
+        // Build call_id → tool_name lookup from the original calls
+        let call_id_to_name: HashMap<&str, &str> = calls
+            .iter()
+            .map(|c| (c.id.as_str(), c.name.as_str()))
+            .collect();
+
+        // Extract the last user message for relevance-guided extraction
+        let user_query: String = self
+            .params
+            .messages
+            .iter()
+            .rev()
+            .find_map(|m| {
+                if m.role == crate::chat::ChatRole::User {
+                    m.content.iter().find_map(|b| match b {
+                        ContentBlock::Text(t) => Some(t.clone()),
+                        _ => None,
+                    })
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_default();
+
+        for result in results.iter_mut() {
+            let tool_name = call_id_to_name
+                .get(result.tool_call_id.as_str())
+                .copied()
+                .unwrap_or("unknown");
+
+            if result.is_error {
+                continue;
+            }
+
+            // Stage 1: structural pruning via processor
+            if let Some(ref processor) = self.config.result_processor {
+                let processed = processor.process(tool_name, &result.content);
+                if processed.was_processed {
+                    self.events.push(LoopEvent::ToolResultProcessed {
+                        tool_name: tool_name.to_string(),
+                        original_tokens: processed.original_tokens_est,
+                        processed_tokens: processed.processed_tokens_est,
+                    });
+                    result.content = processed.content;
+                }
+            }
+
+            // Stage 2: semantic extraction via async extractor
+            if let Some(ref extractor) = self.config.result_extractor {
+                let tokens = crate::context::estimate_tokens(&result.content);
+                if tokens > extractor.extraction_threshold() {
+                    if let Some(extracted) = extractor
+                        .extract(tool_name, &result.content, &user_query)
+                        .await
+                    {
+                        self.events.push(LoopEvent::ToolResultExtracted {
+                            tool_name: tool_name.to_string(),
+                            original_tokens: extracted.original_tokens_est,
+                            extracted_tokens: extracted.extracted_tokens_est,
+                        });
+                        result.content = extracted.content;
+                    }
+                }
+            }
+
+            // Stage 3: cache overflow — store externally if still too large
+            if let Some(ref cacher) = self.config.result_cacher {
+                let tokens = crate::context::estimate_tokens(&result.content);
+                if tokens > cacher.inline_threshold() {
+                    if let Some(cached) = cacher.cache(tool_name, &result.content) {
+                        self.events.push(LoopEvent::ToolResultCached {
+                            tool_name: tool_name.to_string(),
+                            original_tokens: cached.original_tokens_est,
+                            summary_tokens: cached.summary_tokens_est,
+                        });
+                        result.content = cached.summary;
+                    }
+                }
+            }
         }
     }
 
@@ -498,6 +623,103 @@ impl<Ctx: LoopDepth + Send + Sync + 'static> LoopCore<Ctx> {
                 iterations: self.iterations,
                 total_usage: self.total_usage.clone(),
             })
+        }
+    }
+
+    // ── Observation masking ──────────────────────────────────────
+
+    /// Replace old tool results with compact placeholders.
+    ///
+    /// Scans `tool_result_meta` for results from iterations older than
+    /// `config.masking.max_iterations_to_keep` and larger than
+    /// `config.masking.min_tokens_to_mask`, replacing their content
+    /// with a one-line placeholder.
+    fn mask_old_observations(&mut self) {
+        let Some(masking_config) = self.config.masking else {
+            return;
+        };
+
+        // Collect force-mask iterations (agent-directed via context_release)
+        let force_mask = self
+            .config
+            .force_mask_iterations
+            .as_ref()
+            .and_then(|fm| fm.lock().ok())
+            .map(|set| set.clone());
+
+        // Only mask starting from iteration 3+ (need enough history),
+        // unless there are force-masked iterations to process
+        let has_force_masks = force_mask.as_ref().is_some_and(|s| !s.is_empty());
+        if !has_force_masks && self.iterations <= masking_config.max_iterations_to_keep {
+            return;
+        }
+
+        let cutoff = self
+            .iterations
+            .saturating_sub(masking_config.max_iterations_to_keep);
+        let mut masked_count: usize = 0;
+        let mut tokens_saved: u32 = 0;
+
+        for meta in &mut self.tool_result_meta {
+            if meta.masked {
+                continue;
+            }
+
+            // Check: age-based OR force-masked
+            let is_old = meta.iteration <= cutoff;
+            let is_forced = force_mask
+                .as_ref()
+                .is_some_and(|s| s.contains(&meta.iteration));
+
+            if !is_old && !is_forced {
+                continue;
+            }
+
+            let msg = &self.params.messages[meta.message_index];
+
+            // Extract the tool result content and estimate tokens
+            let (tool_call_id, content, is_error) = match msg.content.first() {
+                Some(ContentBlock::ToolResult(tr)) => {
+                    (tr.tool_call_id.clone(), &tr.content, tr.is_error)
+                }
+                _ => continue,
+            };
+
+            // Don't mask errors (they're usually small and informative)
+            if is_error {
+                continue;
+            }
+
+            let content_tokens = crate::context::estimate_tokens(content);
+            if content_tokens < masking_config.min_tokens_to_mask {
+                continue;
+            }
+
+            // Build placeholder
+            let placeholder = format!(
+                "[Masked — tool result from iteration {iter}, ~{content_tokens} tokens. \
+                 Use result_cache tool if available, or re-invoke tool.]",
+                iter = meta.iteration,
+            );
+            let placeholder_tokens = crate::context::estimate_tokens(&placeholder);
+
+            // Replace the message content
+            self.params.messages[meta.message_index] = ChatMessage::tool_result_full(ToolResult {
+                tool_call_id,
+                content: placeholder,
+                is_error: false,
+            });
+
+            meta.masked = true;
+            masked_count += 1;
+            tokens_saved += content_tokens.saturating_sub(placeholder_tokens);
+        }
+
+        if masked_count > 0 {
+            self.events.push(LoopEvent::ObservationsMasked {
+                masked_count,
+                tokens_saved,
+            });
         }
     }
 

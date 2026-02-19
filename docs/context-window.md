@@ -274,6 +274,40 @@ window.push(
 );
 ```
 
+## Result processing (pre-insertion pruning)
+
+Before tool results enter the conversation, you can structurally prune them via a `ToolResultProcessor`. This is the first line of defense — it reduces token consumption at the source rather than compacting after the fact.
+
+Set `result_processor` on `ToolLoopConfig` to intercept tool output by tool name. See [Result processing](tools.md#result-processing) in the tools doc for the full API.
+
+Typical pruning strategies:
+- **Web search**: Strip HTML tags, cap at a token budget
+- **Database queries**: Truncate row count, drop verbose metadata
+- **File reads**: Head + tail sampling for large files
+- **Default**: Hard cap for unknown tools
+
+The processor emits `LoopEvent::ToolResultProcessed` events with before/after token estimates, letting you track savings.
+
+## Emergency truncation
+
+When compaction isn't enough (e.g., a single exchange overflows the budget), `force_fit()` aggressively drops compactable messages oldest-first until the window fits:
+
+```rust
+if window.needs_compaction(0.95) {
+    let dropped = window.force_fit();
+    if !dropped.is_empty() {
+        eprintln!("Emergency: dropped {} messages", dropped.len());
+    }
+}
+
+// If still over budget (all remaining are protected), handle gracefully
+if window.available() == 0 {
+    return Err("Context overflow — cannot fit prompt");
+}
+```
+
+Unlike `compact()` which removes *all* compactable messages, `force_fit()` stops as soon as the window is under budget. Use it as a last-resort safety net after other strategies (compaction, observation masking) have been applied.
+
 ## Tips
 
 1. **Reserve enough for output** — If your responses average 1K tokens, reserve at least 2K to be safe
