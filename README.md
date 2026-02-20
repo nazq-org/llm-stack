@@ -110,7 +110,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | **Structured Output** | `generate_object::<T>()` with JSON Schema validation |
 | **Interceptors** | Composable retry, timeout, logging, approval gates |
 | **Usage Tracking** | Token counts, cost calculation in microdollars |
-| **Context Management** | Token budget tracking, message truncation |
+| **Context Management** | Token budget, compaction, emergency truncation, observation masking |
+| **Result Pipeline** | Structural pruning → semantic extraction → disk-backed caching |
 
 ### Provider Support
 

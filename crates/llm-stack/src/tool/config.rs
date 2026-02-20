@@ -11,6 +11,10 @@ use crate::chat::{ChatResponse, ToolCall, ToolResult};
 use crate::error::LlmError;
 use crate::usage::Usage;
 
+use super::cacher::ToolResultCacher;
+use super::extractor::ToolResultExtractor;
+use super::processor::ToolResultProcessor;
+
 /// Callback type for tool call approval.
 pub type ToolApprovalFn = Arc<dyn Fn(&ToolCall) -> ToolApproval + Send + Sync>;
 
@@ -239,6 +243,59 @@ pub enum LoopEvent {
         duration: Duration,
     },
 
+    /// A tool result was post-processed (compressed, truncated, etc.).
+    ///
+    /// Emitted when a [`ToolResultProcessor`](super::ToolResultProcessor)
+    /// modifies a tool's output before it enters the conversation context.
+    /// Use this for monitoring compression ratios and token savings.
+    ToolResultProcessed {
+        /// Name of the tool whose result was processed.
+        tool_name: String,
+        /// Estimated token count of the original output.
+        original_tokens: u32,
+        /// Estimated token count after processing.
+        processed_tokens: u32,
+    },
+
+    /// A tool result was semantically extracted (condensed by an LLM).
+    ///
+    /// Emitted when a [`ToolResultExtractor`](super::ToolResultExtractor)
+    /// condenses a large tool result into task-relevant content using an
+    /// async extraction call (typically a fast/cheap LLM like Haiku).
+    ToolResultExtracted {
+        /// Name of the tool whose result was extracted.
+        tool_name: String,
+        /// Estimated token count before extraction.
+        original_tokens: u32,
+        /// Estimated token count after extraction.
+        extracted_tokens: u32,
+    },
+
+    /// A tool result was cached out-of-context.
+    ///
+    /// Emitted when a [`ToolResultCacher`](super::ToolResultCacher) stores
+    /// an oversized result externally and replaces it with a compact summary.
+    ToolResultCached {
+        /// Name of the tool whose result was cached.
+        tool_name: String,
+        /// Estimated token count of the content that was cached.
+        original_tokens: u32,
+        /// Estimated token count of the summary that replaced it.
+        summary_tokens: u32,
+    },
+
+    /// Old tool results were masked before an LLM call.
+    ///
+    /// Emitted when observation masking replaces old tool results with
+    /// compact placeholders to reduce context size. The full results
+    /// may still be available in the result cache.
+    ObservationsMasked {
+        /// Number of tool results masked in this pass.
+        masked_count: usize,
+        /// Estimated total tokens saved by masking.
+        tokens_saved: u32,
+    },
+
     /// A tool call loop was detected.
     ///
     /// Emitted when the same tool is called with identical arguments
@@ -349,6 +406,94 @@ pub struct ToolLoopConfig {
     /// ```
     pub timeout: Option<Duration>,
 
+    /// Optional processor that runs on tool results before they enter the
+    /// conversation context.
+    ///
+    /// When set, the processor's [`process`](ToolResultProcessor::process)
+    /// method is called on each tool result after execution. If it modifies
+    /// the content, a [`LoopEvent::ToolResultProcessed`] event is emitted
+    /// for observability.
+    ///
+    /// Default: `None` (no processing — results pass through unmodified).
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// use llm_stack::tool::{ToolLoopConfig, ToolResultProcessor, ProcessedResult};
+    /// use std::sync::Arc;
+    ///
+    /// struct TruncateProcessor;
+    /// impl ToolResultProcessor for TruncateProcessor {
+    ///     fn process(&self, _tool_name: &str, output: &str) -> ProcessedResult {
+    ///         if output.len() > 10_000 {
+    ///             ProcessedResult {
+    ///                 content: output[..10_000].to_string(),
+    ///                 was_processed: true,
+    ///                 original_tokens_est: (output.len() as u32) / 4,
+    ///                 processed_tokens_est: 2500,
+    ///             }
+    ///         } else {
+    ///             ProcessedResult::unchanged()
+    ///         }
+    ///     }
+    /// }
+    ///
+    /// let config = ToolLoopConfig {
+    ///     result_processor: Some(Arc::new(TruncateProcessor)),
+    ///     ..Default::default()
+    /// };
+    /// ```
+    pub result_processor: Option<Arc<dyn ToolResultProcessor>>,
+
+    /// Async semantic extractor for large tool results.
+    ///
+    /// After the [`result_processor`](Self::result_processor) runs, if the
+    /// result still exceeds the extractor's [`extraction_threshold`](ToolResultExtractor::extraction_threshold),
+    /// the extractor condenses it using async work (e.g., a fast LLM call).
+    ///
+    /// The extractor receives the last user message for relevance-guided
+    /// extraction. Results below the threshold skip this stage entirely.
+    ///
+    /// Default: `None` (no semantic extraction).
+    pub result_extractor: Option<Arc<dyn ToolResultExtractor>>,
+
+    /// Out-of-context cacher for oversized tool results.
+    ///
+    /// After the [`result_processor`](Self::result_processor) and optional
+    /// [`result_extractor`](Self::result_extractor) run, if the result still
+    /// exceeds the cacher's [`inline_threshold`](ToolResultCacher::inline_threshold),
+    /// the cacher stores the full content externally and returns a compact
+    /// summary for the conversation.
+    ///
+    /// The caller decides how to store (disk, memory, KV, …). llm-stack
+    /// only provides the hook and the threshold check.
+    ///
+    /// Default: `None` (no caching — oversized results stay inline).
+    pub result_cacher: Option<Arc<dyn ToolResultCacher>>,
+
+    /// Observation masking: replace old tool results with compact
+    /// placeholders to reduce context size between iterations.
+    ///
+    /// When enabled, `LoopCore` scans the message history before each
+    /// LLM call and masks tool results from old iterations. Masking
+    /// preserves the tool call / result structure (so the LLM knows a
+    /// tool was called) but replaces the content with a short placeholder.
+    ///
+    /// Default: `None` (no masking — all tool results stay in context).
+    pub masking: Option<ObservationMaskingConfig>,
+
+    /// Agent-directed force-mask set for observation masking.
+    ///
+    /// When set, tool results from iterations listed in this set are
+    /// masked regardless of age. This enables tools like `context_release`
+    /// to mark specific iterations as stale during execution.
+    ///
+    /// The set is shared between the tool loop config and the tool that
+    /// writes to it (e.g., via `Arc::clone`). Thread-safe via `Mutex`.
+    ///
+    /// Default: `None` (only age-based masking applies).
+    pub force_mask_iterations: Option<Arc<std::sync::Mutex<std::collections::HashSet<u32>>>>,
+
     /// Maximum allowed nesting depth for recursive tool loops.
     ///
     /// When a tool calls `tool_loop` internally (e.g., spawning a sub-agent),
@@ -375,6 +520,52 @@ pub struct ToolLoopConfig {
     pub max_depth: Option<u32>,
 }
 
+/// Configuration for observation masking within the tool loop.
+///
+/// Observation masking replaces old tool results with compact placeholders
+/// to keep context size bounded during long tool loop runs. This is
+/// critical for agents that make many tool calls (10+) in a single
+/// request, where accumulated results can fill the context window.
+///
+/// # How it works
+///
+/// Tool results are tagged with the iteration they were produced in.
+/// Before each LLM call, results older than `max_iterations_to_keep`
+/// iterations are replaced with a placeholder like:
+///
+/// ```text
+/// [Masked — {tool_name} result from iteration {N}, {tokens} tokens.
+///  Use result_cache tool if available, or re-invoke tool.]
+/// ```
+///
+/// Only results larger than `min_tokens_to_mask` are masked. Small
+/// results (e.g., error messages, simple values) stay in-context.
+#[derive(Debug, Clone, Copy)]
+pub struct ObservationMaskingConfig {
+    /// Mask tool results older than this many iterations ago.
+    ///
+    /// For example, if `max_iterations_to_keep = 2` and we're on
+    /// iteration 5, results from iterations 1-2 may be masked.
+    ///
+    /// Default: 2 (keep results from the last 2 iterations).
+    pub max_iterations_to_keep: u32,
+
+    /// Only mask results with estimated token count above this threshold.
+    /// Small results (error messages, simple values) are kept inline.
+    ///
+    /// Default: 500 tokens (~2000 chars).
+    pub min_tokens_to_mask: u32,
+}
+
+impl Default for ObservationMaskingConfig {
+    fn default() -> Self {
+        Self {
+            max_iterations_to_keep: 2,
+            min_tokens_to_mask: 500,
+        }
+    }
+}
+
 impl Clone for ToolLoopConfig {
     fn clone(&self) -> Self {
         Self {
@@ -384,6 +575,11 @@ impl Clone for ToolLoopConfig {
             stop_when: self.stop_when.clone(),
             loop_detection: self.loop_detection,
             timeout: self.timeout,
+            result_processor: self.result_processor.clone(),
+            result_extractor: self.result_extractor.clone(),
+            result_cacher: self.result_cacher.clone(),
+            masking: self.masking,
+            force_mask_iterations: self.force_mask_iterations.clone(),
             max_depth: self.max_depth,
         }
     }
@@ -398,6 +594,11 @@ impl Default for ToolLoopConfig {
             stop_when: None,
             loop_detection: None,
             timeout: None,
+            result_processor: None,
+            result_extractor: None,
+            result_cacher: None,
+            masking: None,
+            force_mask_iterations: None,
             max_depth: Some(3),
         }
     }
@@ -412,6 +613,14 @@ impl std::fmt::Debug for ToolLoopConfig {
             .field("has_stop_when", &self.stop_when.is_some())
             .field("loop_detection", &self.loop_detection)
             .field("timeout", &self.timeout)
+            .field("has_result_processor", &self.result_processor.is_some())
+            .field("has_result_extractor", &self.result_extractor.is_some())
+            .field("has_result_cacher", &self.result_cacher.is_some())
+            .field("masking", &self.masking)
+            .field(
+                "has_force_mask_iterations",
+                &self.force_mask_iterations.is_some(),
+            )
             .field("max_depth", &self.max_depth)
             .finish()
     }

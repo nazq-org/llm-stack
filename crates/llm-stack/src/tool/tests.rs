@@ -3678,3 +3678,571 @@ async fn test_owned_depth_exceeded() {
     }
     assert!(handle.is_finished());
 }
+
+// ── Observation masking tests ──────────────────────────────────────
+
+/// A tool that returns a string of configurable size for masking tests.
+struct BigOutputTool;
+
+impl ToolHandler<()> for BigOutputTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "big_output".into(),
+            description: "Returns a large string".into(),
+            parameters: JsonSchema::new(json!({
+                "type": "object",
+                "properties": {
+                    "size": {"type": "number"}
+                },
+                "required": ["size"]
+            })),
+            retry: None,
+        }
+    }
+
+    fn execute<'a>(
+        &'a self,
+        input: Value,
+        _ctx: &'a (),
+    ) -> Pin<Box<dyn Future<Output = Result<ToolOutput, ToolError>> + Send + 'a>> {
+        Box::pin(async move {
+            let size = usize::try_from(input["size"].as_u64().unwrap_or(100)).unwrap();
+            Ok(ToolOutput::new("x".repeat(size)))
+        })
+    }
+}
+
+#[tokio::test]
+async fn test_masking_replaces_old_large_results() {
+    // 4 iterations of tool calls + 1 final text = 5 iterations.
+    // With max_iterations_to_keep=2, masking at iteration 4 should mask
+    // results from iteration 1 (cutoff = 4 - 2 = 2, so iter <= 2 masked).
+    let mock = mock_for("test", "test-model");
+
+    // 4 tool call iterations with large output
+    for i in 0..4 {
+        mock.queue_response(sample_tool_response(vec![ToolCall {
+            id: format!("call_{i}"),
+            name: "big_output".into(),
+            arguments: json!({"size": 4000}), // 4000 chars = ~1000 tokens > 500
+        }]));
+    }
+    // Final text
+    mock.queue_response(sample_response("Done"));
+
+    let mut registry: ToolRegistry<()> = ToolRegistry::new();
+    registry.register(BigOutputTool);
+
+    let params = ChatParams {
+        messages: vec![ChatMessage::user("Go")],
+        ..Default::default()
+    };
+
+    let config = ToolLoopConfig {
+        masking: Some(ObservationMaskingConfig {
+            max_iterations_to_keep: 2,
+            min_tokens_to_mask: 500,
+        }),
+        ..Default::default()
+    };
+
+    let result = tool_loop(&mock, &registry, params, config, &())
+        .await
+        .unwrap();
+    assert_eq!(result.iterations, 5);
+
+    // Verify that old results were replaced with placeholders.
+    // The mock captures all calls, so let's inspect the final messages.
+    let calls = mock.recorded_calls();
+    assert!(calls.len() >= 5);
+
+    // The 5th call (index 4) should have masked results from early iterations.
+    // Masking runs at start of iteration 5. cutoff = 5 - 2 = 3.
+    // Iterations 1, 2, 3 are <= cutoff → masked. Iteration 4 > cutoff → kept.
+    let last_call = &calls[4];
+    let tool_result_msgs: Vec<_> = last_call
+        .messages
+        .iter()
+        .filter(|m| m.role == ChatRole::Tool)
+        .collect();
+
+    // We should have 4 tool result messages
+    assert_eq!(tool_result_msgs.len(), 4);
+
+    // First 3 should be masked (iterations 1, 2, 3)
+    for msg in &tool_result_msgs[..3] {
+        if let Some(ContentBlock::ToolResult(tr)) = msg.content.first() {
+            assert!(
+                tr.content.contains("[Masked"),
+                "Expected masked placeholder, got: {}",
+                &tr.content[..tr.content.len().min(80)]
+            );
+        } else {
+            panic!("Expected ToolResult content block");
+        }
+    }
+
+    // Last one should NOT be masked (iteration 4, within keep window)
+    if let Some(ContentBlock::ToolResult(tr)) = tool_result_msgs[3].content.first() {
+        assert!(
+            !tr.content.contains("[Masked"),
+            "Iteration 4 result should not be masked"
+        );
+        assert_eq!(tr.content.len(), 4000);
+    } else {
+        panic!("Expected ToolResult content block");
+    }
+}
+
+#[tokio::test]
+async fn test_masking_preserves_small_results() {
+    // Small results (< min_tokens_to_mask) should stay inline even when old.
+    let mock = mock_for("test", "test-model");
+
+    // 4 tool call iterations with SMALL output (100 chars = ~25 tokens < 500)
+    for i in 0..4 {
+        mock.queue_response(sample_tool_response(vec![ToolCall {
+            id: format!("call_{i}"),
+            name: "big_output".into(),
+            arguments: json!({"size": 100}),
+        }]));
+    }
+    mock.queue_response(sample_response("Done"));
+
+    let mut registry: ToolRegistry<()> = ToolRegistry::new();
+    registry.register(BigOutputTool);
+
+    let params = ChatParams {
+        messages: vec![ChatMessage::user("Go")],
+        ..Default::default()
+    };
+
+    let config = ToolLoopConfig {
+        masking: Some(ObservationMaskingConfig {
+            max_iterations_to_keep: 2,
+            min_tokens_to_mask: 500,
+        }),
+        ..Default::default()
+    };
+
+    let result = tool_loop(&mock, &registry, params, config, &())
+        .await
+        .unwrap();
+    assert_eq!(result.iterations, 5);
+
+    // All results should be un-masked (too small)
+    let last_call = &mock.recorded_calls()[4];
+    let tool_results: Vec<_> = last_call
+        .messages
+        .iter()
+        .filter(|m| m.role == ChatRole::Tool)
+        .collect();
+
+    for msg in &tool_results {
+        if let Some(ContentBlock::ToolResult(tr)) = msg.content.first() {
+            assert!(
+                !tr.content.contains("[Masked"),
+                "Small results should not be masked"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn test_masking_preserves_error_results() {
+    // Error results should never be masked, even if large and old.
+    let mock = mock_for("test", "test-model");
+
+    // Iteration 1: call fail tool (returns error)
+    mock.queue_response(sample_tool_response(vec![ToolCall {
+        id: "call_0".into(),
+        name: "fail".into(),
+        arguments: json!({}),
+    }]));
+    // Iterations 2-4: normal tool calls with large output
+    for i in 1..4 {
+        mock.queue_response(sample_tool_response(vec![ToolCall {
+            id: format!("call_{i}"),
+            name: "big_output".into(),
+            arguments: json!({"size": 4000}),
+        }]));
+    }
+    mock.queue_response(sample_response("Done"));
+
+    let mut registry: ToolRegistry<()> = ToolRegistry::new();
+    registry.register(BigOutputTool);
+    registry.register(FailTool);
+
+    let params = ChatParams {
+        messages: vec![ChatMessage::user("Go")],
+        ..Default::default()
+    };
+
+    let config = ToolLoopConfig {
+        masking: Some(ObservationMaskingConfig {
+            max_iterations_to_keep: 2,
+            min_tokens_to_mask: 500,
+        }),
+        ..Default::default()
+    };
+
+    let result = tool_loop(&mock, &registry, params, config, &())
+        .await
+        .unwrap();
+    assert_eq!(result.iterations, 5);
+
+    // The error result from iteration 1 should NOT be masked
+    let last_call = &mock.recorded_calls()[4];
+    let tool_results: Vec<_> = last_call
+        .messages
+        .iter()
+        .filter(|m| m.role == ChatRole::Tool)
+        .collect();
+
+    // First tool result is from the fail tool (iteration 1) - should be preserved
+    if let Some(ContentBlock::ToolResult(tr)) = tool_results[0].content.first() {
+        assert!(tr.is_error, "First result should be an error");
+        assert!(
+            !tr.content.contains("[Masked"),
+            "Error results should never be masked"
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_masking_emits_observations_masked_event() {
+    use futures::StreamExt;
+
+    let mock = Arc::new(mock_for("test", "test-model"));
+
+    // 3 tool call iterations with large output + final text
+    for i in 0..3 {
+        mock.queue_response(sample_tool_response(vec![ToolCall {
+            id: format!("call_{i}"),
+            name: "big_output".into(),
+            arguments: json!({"size": 4000}),
+        }]));
+    }
+    mock.queue_response(sample_response("Done"));
+
+    let mut registry: ToolRegistry<()> = ToolRegistry::new();
+    registry.register(BigOutputTool);
+    let registry = Arc::new(registry);
+
+    let params = ChatParams {
+        messages: vec![ChatMessage::user("Go")],
+        ..Default::default()
+    };
+
+    let config = ToolLoopConfig {
+        masking: Some(ObservationMaskingConfig {
+            max_iterations_to_keep: 1,
+            min_tokens_to_mask: 500,
+        }),
+        ..Default::default()
+    };
+
+    let stream = tool_loop_stream(mock, registry, params, config, Arc::new(()));
+    let events: Vec<LoopEvent> = stream
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .filter_map(Result::ok)
+        .collect();
+
+    // Should have at least one ObservationsMasked event
+    let masked_events: Vec<_> = events
+        .iter()
+        .filter(|e| matches!(e, LoopEvent::ObservationsMasked { .. }))
+        .collect();
+
+    assert!(
+        !masked_events.is_empty(),
+        "Expected at least one ObservationsMasked event"
+    );
+
+    // Verify it has reasonable values
+    if let LoopEvent::ObservationsMasked {
+        masked_count,
+        tokens_saved,
+    } = masked_events[0]
+    {
+        assert!(*masked_count >= 1, "Should mask at least 1 result");
+        assert!(*tokens_saved > 0, "Should save some tokens");
+    }
+}
+
+#[tokio::test]
+async fn test_no_masking_without_config() {
+    // When masking is None, no results should be masked.
+    let mock = mock_for("test", "test-model");
+
+    for i in 0..4 {
+        mock.queue_response(sample_tool_response(vec![ToolCall {
+            id: format!("call_{i}"),
+            name: "big_output".into(),
+            arguments: json!({"size": 4000}),
+        }]));
+    }
+    mock.queue_response(sample_response("Done"));
+
+    let mut registry: ToolRegistry<()> = ToolRegistry::new();
+    registry.register(BigOutputTool);
+
+    let params = ChatParams {
+        messages: vec![ChatMessage::user("Go")],
+        ..Default::default()
+    };
+
+    // No masking config (default)
+    let config = ToolLoopConfig::default();
+
+    let result = tool_loop(&mock, &registry, params, config, &())
+        .await
+        .unwrap();
+    assert_eq!(result.iterations, 5);
+
+    // All results should be un-masked
+    let last_call = &mock.recorded_calls()[4];
+    let tool_results: Vec<_> = last_call
+        .messages
+        .iter()
+        .filter(|m| m.role == ChatRole::Tool)
+        .collect();
+
+    for msg in &tool_results {
+        if let Some(ContentBlock::ToolResult(tr)) = msg.content.first() {
+            assert!(
+                !tr.content.contains("[Masked"),
+                "No masking should occur without config"
+            );
+            assert_eq!(tr.content.len(), 4000);
+        }
+    }
+}
+
+#[test]
+fn test_observation_masking_config_default() {
+    let cfg = ObservationMaskingConfig::default();
+    assert_eq!(cfg.max_iterations_to_keep, 2);
+    assert_eq!(cfg.min_tokens_to_mask, 500);
+}
+
+#[test]
+fn test_observation_masking_config_debug_clone() {
+    let cfg = ObservationMaskingConfig {
+        max_iterations_to_keep: 3,
+        min_tokens_to_mask: 100,
+    };
+    let cloned = cfg;
+    assert_eq!(cloned.max_iterations_to_keep, 3);
+    assert_eq!(cloned.min_tokens_to_mask, 100);
+    let debug = format!("{cfg:?}");
+    assert!(debug.contains("max_iterations_to_keep"));
+    assert!(debug.contains("min_tokens_to_mask"));
+}
+
+// ── Extraction pipeline tests ──────────────────────────────────────
+
+/// Test extractor that condenses any result above threshold into a short summary.
+struct TestExtractor {
+    threshold: u32,
+}
+
+impl ToolResultExtractor for TestExtractor {
+    fn extract<'a>(
+        &'a self,
+        tool_name: &'a str,
+        output: &'a str,
+        user_query: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Option<ExtractedResult>> + Send + 'a>> {
+        Box::pin(async move {
+            Some(ExtractedResult {
+                content: format!(
+                    "[Extracted from {tool_name} for query: {user_query}] {} chars",
+                    output.len()
+                ),
+                original_tokens_est: crate::context::estimate_tokens(output),
+                extracted_tokens_est: 20,
+            })
+        })
+    }
+
+    fn extraction_threshold(&self) -> u32 {
+        self.threshold
+    }
+}
+
+#[tokio::test]
+async fn test_extraction_condenses_large_results() {
+    // 1 tool call with large output + 1 final text
+    let mock = mock_for("test", "test-model");
+    mock.queue_response(sample_tool_response(vec![ToolCall {
+        id: "call_0".into(),
+        name: "big_output".into(),
+        arguments: json!({"size": 80000}), // 80K chars = ~20K tokens
+    }]));
+    mock.queue_response(sample_response("Done"));
+
+    let mut registry: ToolRegistry<()> = ToolRegistry::new();
+    registry.register(BigOutputTool);
+
+    let params = ChatParams {
+        messages: vec![ChatMessage::user("What is the weather?")],
+        tools: Some(registry.definitions()),
+        ..Default::default()
+    };
+
+    let config = ToolLoopConfig {
+        max_iterations: 10,
+        // Threshold at 100 tokens — our 20K-token output will trigger
+        result_extractor: Some(Arc::new(TestExtractor { threshold: 100 })),
+        ..Default::default()
+    };
+
+    let result = tool_loop(&mock, &registry, params, config, &())
+        .await
+        .unwrap();
+    assert_eq!(result.response.text().unwrap(), "Done");
+
+    // Verify the extraction happened — check the mock's recorded calls.
+    // The second LLM call should have the extracted content, not the 80K original.
+    let calls = mock.recorded_calls();
+    assert_eq!(calls.len(), 2);
+    let second_call = &calls[1];
+    // The tool result message should contain the extracted summary
+    let tool_result_msg = second_call
+        .messages
+        .iter()
+        .find(|m| m.role == ChatRole::Tool)
+        .expect("should have tool result message");
+    let content = match &tool_result_msg.content[0] {
+        ContentBlock::ToolResult(tr) => &tr.content,
+        _ => panic!("expected ToolResult"),
+    };
+    assert!(
+        content.contains("[Extracted from big_output"),
+        "content should be extracted: {content}"
+    );
+    assert!(
+        content.contains("What is the weather"),
+        "extraction should include user query: {content}"
+    );
+}
+
+#[tokio::test]
+async fn test_extraction_skips_small_results() {
+    // Small output that's below the extraction threshold
+    let mock = mock_for("test", "test-model");
+    mock.queue_response(sample_tool_response(vec![ToolCall {
+        id: "call_0".into(),
+        name: "big_output".into(),
+        arguments: json!({"size": 100}), // 100 chars = ~25 tokens
+    }]));
+    mock.queue_response(sample_response("Done"));
+
+    let mut registry: ToolRegistry<()> = ToolRegistry::new();
+    registry.register(BigOutputTool);
+
+    let params = ChatParams {
+        messages: vec![ChatMessage::user("Test query")],
+        tools: Some(registry.definitions()),
+        ..Default::default()
+    };
+
+    let config = ToolLoopConfig {
+        max_iterations: 10,
+        // Threshold at 1000 tokens — 25-token output won't trigger
+        result_extractor: Some(Arc::new(TestExtractor { threshold: 1000 })),
+        ..Default::default()
+    };
+
+    let result = tool_loop(&mock, &registry, params, config, &())
+        .await
+        .unwrap();
+    assert_eq!(result.response.text().unwrap(), "Done");
+
+    // The tool result should be the original content (not extracted)
+    let calls = mock.recorded_calls();
+    let second_call = &calls[1];
+    let tool_result_msg = second_call
+        .messages
+        .iter()
+        .find(|m| m.role == ChatRole::Tool)
+        .expect("should have tool result message");
+    let content = match &tool_result_msg.content[0] {
+        ContentBlock::ToolResult(tr) => &tr.content,
+        _ => panic!("expected ToolResult"),
+    };
+    // Should be the original 100 x's, not extracted
+    assert_eq!(content, &"x".repeat(100));
+}
+
+#[tokio::test]
+async fn test_extraction_emits_event_via_stream() {
+    use futures::StreamExt;
+
+    let mock = mock_for("test", "test-model");
+    mock.queue_response(sample_tool_response(vec![ToolCall {
+        id: "call_0".into(),
+        name: "big_output".into(),
+        arguments: json!({"size": 80000}),
+    }]));
+    mock.queue_response(sample_response("Done"));
+
+    let mut registry: ToolRegistry<()> = ToolRegistry::new();
+    registry.register(BigOutputTool);
+
+    let params = ChatParams {
+        messages: vec![ChatMessage::user("Extract test")],
+        tools: Some(registry.definitions()),
+        ..Default::default()
+    };
+
+    let config = ToolLoopConfig {
+        max_iterations: 10,
+        result_extractor: Some(Arc::new(TestExtractor { threshold: 100 })),
+        ..Default::default()
+    };
+
+    let mut stream = tool_loop_stream(
+        Arc::new(mock),
+        Arc::new(registry),
+        params,
+        config,
+        Arc::new(()),
+    );
+
+    let mut found_extracted = false;
+    while let Some(event) = stream.next().await {
+        if let Ok(LoopEvent::ToolResultExtracted {
+            tool_name,
+            original_tokens,
+            extracted_tokens,
+        }) = event
+        {
+            assert_eq!(tool_name, "big_output");
+            assert!(original_tokens > 100);
+            assert_eq!(extracted_tokens, 20);
+            found_extracted = true;
+        }
+    }
+    assert!(
+        found_extracted,
+        "Should have emitted ToolResultExtracted event"
+    );
+}
+
+#[test]
+fn test_extracted_result_type() {
+    let result = ExtractedResult {
+        content: "summary".into(),
+        original_tokens_est: 5000,
+        extracted_tokens_est: 100,
+    };
+    let cloned = result.clone();
+    assert_eq!(cloned.content, "summary");
+    let debug = format!("{result:?}");
+    assert!(debug.contains("5000"));
+    assert!(debug.contains("100"));
+}

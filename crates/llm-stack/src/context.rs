@@ -301,6 +301,31 @@ impl ContextWindow {
     pub fn update_token_count(&mut self, index: usize, tokens: u32) {
         self.messages[index].token_count = tokens;
     }
+
+    /// Emergency truncation: aggressively drop compactable messages
+    /// oldest-first until the window fits within its budget.
+    ///
+    /// Unlike [`compact`](Self::compact) which removes *all* compactable
+    /// messages, `force_fit` removes only as many as needed (starting from
+    /// the oldest) to bring `total_tokens` under the input budget.
+    ///
+    /// # Returns
+    ///
+    /// The messages that were dropped, in their original order.
+    pub fn force_fit(&mut self) -> Vec<ChatMessage> {
+        let mut removed = Vec::new();
+
+        // Drop compactable messages oldest-first until under budget
+        while self.needs_compaction(1.0) {
+            let idx = self.messages.iter().position(|m| m.compactable);
+            match idx {
+                Some(i) => removed.push(self.messages.remove(i).message),
+                None => break, // all remaining are protected
+            }
+        }
+
+        removed
+    }
 }
 
 // ── Token estimation ────────────────────────────────────────────────
@@ -807,5 +832,102 @@ mod tests {
 
         assert_eq!(window.len(), 2);
         assert_eq!(window.total_tokens(), 70);
+    }
+
+    // ── force_fit tests ───────────────────────────────────────────
+
+    #[test]
+    fn test_force_fit_drops_oldest_first() {
+        let mut window = ContextWindow::new(1000, 100);
+        // Input budget = 900
+
+        window.push(system_msg("System"), 20);
+        window.protect(0);
+
+        window.push(user_msg("Old"), 500);
+        window.push(user_msg("Newer"), 500);
+
+        // Total = 1020, over budget (900)
+        assert!(window.needs_compaction(1.0));
+
+        let removed = window.force_fit();
+
+        // Should drop oldest compactable first ("Old"), then check —
+        // 520 still > 900? No, 520 <= 900. So only one dropped.
+        assert_eq!(removed.len(), 1);
+        assert_eq!(window.len(), 2); // system + "Newer"
+        assert_eq!(window.total_tokens(), 520);
+        assert!(!window.needs_compaction(1.0));
+    }
+
+    #[test]
+    fn test_force_fit_stops_when_under_budget() {
+        let mut window = ContextWindow::new(1000, 100);
+        // Input budget = 900
+
+        window.push(user_msg("A"), 300);
+        window.push(user_msg("B"), 300);
+        window.push(user_msg("C"), 300);
+        window.push(user_msg("D"), 200);
+
+        // Total = 1100, over budget
+        assert!(window.needs_compaction(1.0));
+
+        let removed = window.force_fit();
+
+        // Drops A (300 → 800), under budget now
+        assert_eq!(removed.len(), 1);
+        assert_eq!(window.total_tokens(), 800);
+    }
+
+    #[test]
+    fn test_force_fit_skips_protected() {
+        let mut window = ContextWindow::new(1000, 100);
+        // Input budget = 900
+
+        window.push(system_msg("System"), 400);
+        window.protect(0);
+
+        window.push(user_msg("Old 1"), 300);
+        window.push(user_msg("Old 2"), 300);
+
+        // Total = 1000, over budget (900)
+        let removed = window.force_fit();
+
+        // Drops "Old 1" (300) → total = 700, under budget → stops
+        assert_eq!(removed.len(), 1);
+        assert_eq!(window.len(), 2); // protected system + "Old 2"
+        assert_eq!(window.total_tokens(), 700);
+    }
+
+    #[test]
+    fn test_force_fit_noop_when_under_budget() {
+        let mut window = ContextWindow::new(1000, 100);
+        window.push(user_msg("Small"), 50);
+
+        let removed = window.force_fit();
+
+        assert!(removed.is_empty());
+        assert_eq!(window.len(), 1);
+    }
+
+    #[test]
+    fn test_force_fit_stops_when_only_protected_remain() {
+        let mut window = ContextWindow::new(1000, 100);
+        // Input budget = 900
+
+        window.push(system_msg("Big system"), 600);
+        window.protect(0);
+
+        window.push(user_msg("Big user"), 400);
+        window.protect(1);
+
+        // Total = 1000, over budget but everything is protected
+        let removed = window.force_fit();
+
+        assert!(removed.is_empty());
+        assert_eq!(window.len(), 2);
+        // Still over budget — caller handles this case
+        assert!(window.needs_compaction(1.0));
     }
 }

@@ -117,7 +117,7 @@ src/
   stream.rs       ChatStream, StreamEvent
   usage.rs        Usage, Cost, UsageTracker
   error.rs        LlmError
-  context.rs      ContextWindow, token estimation
+  context.rs      ContextWindow (compact, force_fit), token estimation
   mcp.rs          McpService trait, McpRegistryExt
   registry.rs     ProviderRegistry, ProviderFactory, ProviderConfig
   structured.rs   generate_object, stream_object (feature-gated)
@@ -145,4 +145,10 @@ src/
     loop_detection.rs Loop detection logic
     execution.rs    Tool execution, returns (results, events)
     approval.rs     ToolApproval handling
+    processor.rs    ToolResultProcessor trait — structural pruning
+    extractor.rs    ToolResultExtractor trait — semantic extraction (async LLM)
+    cacher.rs       ToolResultCacher trait — out-of-band storage
+    cache/
+      mod.rs        ResultCache — disk-backed cache with eviction
+      text.rs       TextBackend — line-oriented text storage
 ```

@@ -265,6 +265,7 @@ let config = ToolLoopConfig {
     stop_when: None,                 // Custom stop condition
     loop_detection: None,            // Detect stuck agents
     timeout: Some(Duration::from_secs(30)),  // Wall-clock timeout
+    result_processor: None,          // Optional tool output pruning (see Result processing)
 };
 ```
 
@@ -878,6 +879,266 @@ If you don't need depth tracking, use `()` as context — it has a blanket `Loop
 // Works without implementing LoopDepth
 let result = tool_loop(provider, &registry, params, config, &()).await?;
 ```
+
+## Result processing
+
+Tool results can be large — web pages, database dumps, file contents. The `ToolResultProcessor` trait lets you structurally prune tool output before it enters the conversation context, keeping token usage under control.
+
+### The trait
+
+```rust
+use llm_stack::tool::{ToolResultProcessor, ProcessedResult};
+
+pub trait ToolResultProcessor: Send + Sync {
+    fn process(&self, tool_name: &str, output: &str) -> ProcessedResult;
+}
+```
+
+The processor receives the tool name and raw output string. Return `ProcessedResult::unchanged()` to pass through, or build a `ProcessedResult` with the pruned content:
+
+```rust
+use llm_stack::tool::ProcessedResult;
+use llm_stack::context::estimate_tokens;
+
+struct MyProcessor;
+
+impl ToolResultProcessor for MyProcessor {
+    fn process(&self, tool_name: &str, output: &str) -> ProcessedResult {
+        match tool_name {
+            "web_search" => {
+                let trimmed = output.chars().take(50_000).collect::<String>();
+                let orig = estimate_tokens(output);
+                let processed = estimate_tokens(&trimmed);
+                ProcessedResult {
+                    content: trimmed,
+                    was_processed: true,
+                    original_tokens_est: orig,
+                    processed_tokens_est: processed,
+                }
+            }
+            _ => ProcessedResult::unchanged(),
+        }
+    }
+}
+```
+
+### Wiring it in
+
+Set the `result_processor` field on `ToolLoopConfig`:
+
+```rust
+use llm_stack::ToolLoopConfig;
+use std::sync::Arc;
+
+let config = ToolLoopConfig {
+    result_processor: Some(Arc::new(MyProcessor)),
+    ..Default::default()
+};
+```
+
+The processor runs after tool execution, before results are appended to the conversation. Error results (where `is_error` is true) are skipped — you only process successful output.
+
+### Observability
+
+When a processor modifies content, the loop emits a `LoopEvent::ToolResultProcessed` event:
+
+```rust
+LoopEvent::ToolResultProcessed {
+    tool_name: String,
+    original_tokens: u32,
+    processed_tokens: u32,
+}
+```
+
+This appears in the `tool_loop_stream` event stream and in the `events` field of `TurnResult::Yielded` for handle-based loops.
+
+### Design notes
+
+- The processor is object-safe (`dyn ToolResultProcessor`) — wrap in `Arc` for sharing across threads.
+- Tool name resolution uses the `call_id → tool_name` mapping from the LLM's tool call list, so no changes to `ToolResult` are needed.
+- The processor is optional (`Option<Arc<dyn ToolResultProcessor>>`). When `None`, results pass through unchanged — no overhead.
+
+## Observation masking
+
+As conversations grow, old tool results consume context space without providing value — the model already processed them. Observation masking replaces stale tool results with compact placeholders, reclaiming tokens while preserving the fact that the tool was called.
+
+### Configuration
+
+Set `masking` on `ToolLoopConfig`:
+
+```rust
+use llm_stack::tool::ObservationMaskingConfig;
+
+let config = ToolLoopConfig {
+    masking: Some(ObservationMaskingConfig {
+        max_iterations_to_keep: 2,  // Mask results older than 2 iterations
+        min_tokens_to_mask: 500,    // Only mask results larger than 500 tokens
+    }),
+    ..Default::default()
+};
+```
+
+With these defaults, after iteration 3 the loop replaces tool results from iteration 1 with:
+
+```
+[Masked — tool result from iteration 1, ~2400 tokens. Use result_cache tool if available, or re-invoke tool.]
+```
+
+Error results are never masked (they're small and informative).
+
+### Agent-directed masking
+
+Agents can force-mask specific iterations via `force_mask_iterations` — a shared `Arc<Mutex<HashSet<u32>>>` on `ToolLoopConfig`. This enables a "context release" tool pattern where the agent explicitly frees space:
+
+```rust
+use std::sync::{Arc, Mutex};
+use std::collections::HashSet;
+
+let force_mask = Arc::new(Mutex::new(HashSet::new()));
+
+let config = ToolLoopConfig {
+    masking: Some(ObservationMaskingConfig::default()),
+    force_mask_iterations: Some(Arc::clone(&force_mask)),
+    ..Default::default()
+};
+
+// A tool can mark iterations for masking:
+force_mask.lock().unwrap().insert(1);  // Force-mask iteration 1's results
+```
+
+### Observability
+
+When masking occurs, the loop emits:
+
+```rust
+LoopEvent::ObservationsMasked {
+    masked_count: 3,   // Number of tool results masked
+    tokens_saved: 7200, // Estimated tokens reclaimed
+}
+```
+
+## Result extraction
+
+For tool results that are too large even after structural pruning, a `ToolResultExtractor` can compress them using a fast LLM (e.g., Haiku). This is an async operation — the extractor calls a language model to produce a semantic summary of the tool output.
+
+### The trait
+
+```rust
+use llm_stack::tool::{ToolResultExtractor, ExtractedResult};
+
+#[async_trait::async_trait]
+pub trait ToolResultExtractor: Send + Sync {
+    async fn extract(&self, tool_name: &str, content: &str) -> Option<ExtractedResult>;
+}
+```
+
+Return `None` to skip extraction (content is small enough). Return `Some(ExtractedResult)` with the compressed content:
+
+```rust
+pub struct ExtractedResult {
+    pub content: String,
+    pub original_tokens_est: u32,
+    pub extracted_tokens_est: u32,
+}
+```
+
+### Wiring it in
+
+```rust
+let config = ToolLoopConfig {
+    result_extractor: Some(Arc::new(MyExtractor::new(haiku_provider))),
+    ..Default::default()
+};
+```
+
+The extractor runs after structural pruning (`result_processor`) but before caching (`result_cacher`). Only results exceeding an inline threshold are candidates.
+
+### Observability
+
+Extraction emits:
+
+```rust
+LoopEvent::ToolResultExtracted {
+    tool_name: String,
+    original_tokens: u32,
+    extracted_tokens: u32,
+}
+```
+
+## Result caching
+
+For results that are still large after pruning and extraction, a `ToolResultCacher` stores the full content out-of-band (e.g., on disk) and replaces the conversation content with a compact summary + cache reference.
+
+### The trait
+
+```rust
+use llm_stack::tool::{ToolResultCacher, CachedResult};
+
+pub trait ToolResultCacher: Send + Sync {
+    fn cache(&self, tool_name: &str, content: &str) -> Option<CachedResult>;
+    fn inline_threshold(&self) -> u32 { 2_000 }
+}
+```
+
+The `inline_threshold()` determines when caching activates (default: 2,000 estimated tokens). Return `None` to skip caching.
+
+### ResultCache
+
+llm-stack provides a built-in disk-backed cache:
+
+```rust
+use llm_stack::tool::cache::{ResultCache, ResultCacheConfig};
+use std::time::Duration;
+
+let cache = ResultCache::new(
+    "/tmp/result-cache",
+    ResultCacheConfig {
+        ttl: Duration::from_secs(30 * 60),      // 30 minute expiry
+        max_disk_bytes: 100 * 1024 * 1024,       // 100 MB limit
+        preview_lines: 20,                        // Lines to include in preview
+    },
+)?;
+
+// Store a result
+let ref_id = cache.store("db_sql", &big_result, BackendKind::Text)?;
+
+// Retrieve it
+let entry = cache.get(&ref_id)?;
+let stats = entry.backend.stats()?;
+println!("{}", stats.summary);  // "1,234 lines, 56 KB"
+
+// Read specific lines
+let lines = entry.backend.read(0, 50)?;    // First 50 lines
+let grep = entry.backend.grep("ERROR")?;   // Search content
+
+// Iterate all entries
+for (ref_id, entry) in cache.iter() {
+    println!("{ref_id}: {} ({})", entry.tool_name, entry.backend.kind());
+}
+```
+
+### Wiring it in
+
+```rust
+use std::sync::{Arc, RwLock};
+
+let cache = Arc::new(RwLock::new(ResultCache::new(dir, config)?));
+
+let tool_config = ToolLoopConfig {
+    result_cacher: Some(Arc::new(MyCacher::new(Arc::clone(&cache)))),
+    ..Default::default()
+};
+```
+
+### Processing pipeline
+
+The three-stage pipeline runs in order on every tool result:
+
+1. **Structural pruning** (`result_processor`) — fast, sync, reduces raw output
+2. **Semantic extraction** (`result_extractor`) — async LLM call, compresses meaning
+3. **Result caching** (`result_cacher`) — stores overflow to disk, returns summary
+
+Each stage is optional. Configure only what you need.
 
 ## Best practices
 

@@ -120,10 +120,13 @@
 //! Clone any data you need from the context before creating the async block.
 
 mod approval;
+pub mod cache;
+mod cacher;
 mod config;
 mod depth;
 mod error;
 mod execution;
+mod extractor;
 mod handler;
 mod helpers;
 pub(crate) mod loop_core;
@@ -133,15 +136,19 @@ mod loop_resumable;
 mod loop_stream;
 mod loop_sync;
 mod output;
+mod processor;
 mod registry;
 
 // Re-export all public types
+pub use cacher::{CachedResult, ToolResultCacher};
 pub use config::{
-    LoopAction, LoopDetectionConfig, LoopEvent, LoopStream, StopConditionFn, StopContext,
-    StopDecision, TerminationReason, ToolApproval, ToolApprovalFn, ToolLoopConfig, ToolLoopResult,
+    LoopAction, LoopDetectionConfig, LoopEvent, LoopStream, ObservationMaskingConfig,
+    StopConditionFn, StopContext, StopDecision, TerminationReason, ToolApproval, ToolApprovalFn,
+    ToolLoopConfig, ToolLoopResult,
 };
 pub use depth::{LoopContext, LoopDepth};
 pub use error::ToolError;
+pub use extractor::{ExtractedResult, ToolResultExtractor};
 pub use handler::{FnToolHandler, NoCtxToolHandler, ToolHandler};
 pub use helpers::{tool_fn, tool_fn_with_ctx};
 pub use loop_owned::{OwnedToolLoopHandle, OwnedTurnResult, OwnedYielded};
@@ -149,6 +156,7 @@ pub use loop_resumable::{Completed, LoopCommand, ToolLoopHandle, TurnError, Turn
 pub use loop_stream::tool_loop_stream;
 pub use loop_sync::tool_loop;
 pub use output::ToolOutput;
+pub use processor::{ProcessedResult, ToolResultProcessor};
 pub use registry::ToolRegistry;
 
 #[cfg(test)]
