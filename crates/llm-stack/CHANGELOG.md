@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.7.0] - 2026-02-20
+
+### Features
+
+- *(tool)* Add context engineering pipeline (Phases 3-7) ([#23](https://github.com/nazq-org/llm-stack/pull/23))
+
+
 ## [0.6.0] - 2026-02-08
 
 ### Refactor
